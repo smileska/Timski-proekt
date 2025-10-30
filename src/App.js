@@ -4,6 +4,22 @@ const STRAVA_CLIENT_ID = '181133';
 const REDIRECT_URI = 'http://localhost:3000';
 const BACKEND_URL = 'http://localhost:3001';
 
+const ALLERGEN_OPTIONS = [
+    { id: 'gluten', name: 'Gluten', icon: '🌾' },
+    { id: 'dairy', name: 'Dairy', icon: '🥛' },
+    { id: 'eggs', name: 'Eggs', icon: '🥚' },
+    { id: 'nuts', name: 'Nuts', icon: '🥜' },
+    { id: 'soy', name: 'Soy', icon: '🫘' },
+    { id: 'fish', name: 'Fish', icon: '🐟' },
+    { id: 'shellfish', name: 'Shellfish', icon: '🦐' },
+    { id: 'sesame', name: 'Sesame', icon: '🌰' },
+    { id: 'mustard', name: 'Mustard', icon: '🌭' },
+    { id: 'celery', name: 'Celery', icon: '🥬' },
+    { id: 'pork', name: 'Pork', icon: '🐷' },
+    { id: 'beef', name: 'Beef', icon: '🐄' },
+    { id: 'chicken', name: 'Chicken', icon: '🐔' }
+];
+
 const mockWorkout = {
     type: 'Run',
     distance: '8.2 km',
@@ -37,17 +53,10 @@ async function exchangeToken(code) {
 async function fetchStravaActivities(accessToken) {
     try {
         const response = await fetch('https://www.strava.com/api/v3/athlete/activities?per_page=10', {
-            headers: {
-                'Authorization': `Bearer ${accessToken}`
-            }
+            headers: { 'Authorization': `Bearer ${accessToken}` }
         });
-
-        if (!response.ok) {
-            throw new Error('Failed to fetch activities');
-        }
-
-        const activities = await response.json();
-        return activities;
+        if (!response.ok) throw new Error('Failed to fetch activities');
+        return await response.json();
     } catch (error) {
         console.error('Error fetching Strava activities:', error);
         return [];
@@ -56,17 +65,14 @@ async function fetchStravaActivities(accessToken) {
 
 async function fetchKorpaRestaurants() {
     try {
-        console.log('Fetching restaurants from Korpa...');
+        console.log('🍽️ Fetching restaurants from Korpa...');
         const response = await fetch(`${BACKEND_URL}/api/korpa/restaurants`);
         const data = await response.json();
-
         if (data.success) {
-            console.log(`Loaded ${data.count} restaurants (cached: ${data.cached})`);
+            console.log(`✅ Loaded ${data.count} restaurants`);
             return data.restaurants;
-        } else {
-            console.error('Failed to load restaurants:', data.error);
-            return [];
         }
+        return [];
     } catch (error) {
         console.error('Error fetching restaurants:', error);
         return [];
@@ -76,7 +82,6 @@ async function fetchKorpaRestaurants() {
 function formatActivity(activity) {
     const distanceKm = (activity.distance / 1000).toFixed(1);
     const durationMin = Math.round(activity.moving_time / 60);
-
     return {
         type: activity.type,
         distance: `${distanceKm} km`,
@@ -87,7 +92,7 @@ function formatActivity(activity) {
     };
 }
 
-function Header({ athleteName }) {
+function Header({ athleteName, onSettingsClick }) {
     return (
         <header style={{
             background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
@@ -106,11 +111,157 @@ function Header({ athleteName }) {
                     <nav style={{ display: 'flex', gap: '12px' }}>
                         <button style={navButtonStyle}>Dashboard</button>
                         <button style={navButtonStyle}>Profile</button>
-                        <button style={navButtonStyle}>Settings</button>
+                        <button style={navButtonStyle} onClick={onSettingsClick}>
+                            ⚙️ Settings
+                        </button>
                     </nav>
                 </div>
             </div>
         </header>
+    );
+}
+
+function AllergenModal({ isOpen, onClose, selectedAllergens, onSave }) {
+    const [localAllergens, setLocalAllergens] = useState(selectedAllergens);
+
+    useEffect(() => {
+        setLocalAllergens(selectedAllergens);
+    }, [selectedAllergens]);
+
+    if (!isOpen) return null;
+
+    const toggleAllergen = (allergenId) => {
+        setLocalAllergens(prev =>
+            prev.includes(allergenId)
+                ? prev.filter(id => id !== allergenId)
+                : [...prev, allergenId]
+        );
+    };
+
+    const handleSave = () => {
+        onSave(localAllergens);
+        onClose();
+    };
+
+    return (
+        <div style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            background: 'rgba(0,0,0,0.7)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 1000
+        }} onClick={onClose}>
+            <div style={{
+                background: 'white',
+                borderRadius: '16px',
+                padding: '32px',
+                maxWidth: '600px',
+                width: '90%',
+                maxHeight: '80vh',
+                overflow: 'auto'
+            }} onClick={(e) => e.stopPropagation()}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
+                    <h2 style={{ margin: 0, color: '#333' }}>🚫 Dietary Restrictions</h2>
+                    <button onClick={onClose} style={{
+                        background: 'none',
+                        border: 'none',
+                        fontSize: '24px',
+                        cursor: 'pointer',
+                        color: '#999'
+                    }}>×</button>
+                </div>
+
+                <p style={{ color: '#666', marginBottom: '24px' }}>
+                    Select items you can't or don't want to eat:
+                </p>
+
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: '12px', marginBottom: '24px' }}>
+                    {ALLERGEN_OPTIONS.map(allergen => (
+                        <button
+                            key={allergen.id}
+                            onClick={() => toggleAllergen(allergen.id)}
+                            style={{
+                                padding: '16px',
+                                border: `2px solid ${localAllergens.includes(allergen.id) ? '#ef4444' : '#e5e7eb'}`,
+                                background: localAllergens.includes(allergen.id) ? '#fee2e2' : 'white',
+                                borderRadius: '12px',
+                                cursor: 'pointer',
+                                transition: 'all 0.2s',
+                                textAlign: 'center'
+                            }}
+                        >
+                            <div style={{ fontSize: '32px', marginBottom: '8px' }}>{allergen.icon}</div>
+                            <div style={{ fontSize: '14px', fontWeight: '500', color: '#333' }}>{allergen.name}</div>
+                            {localAllergens.includes(allergen.id) && (
+                                <div style={{ fontSize: '12px', color: '#ef4444', marginTop: '4px' }}>✓ Excluded</div>
+                            )}
+                        </button>
+                    ))}
+                </div>
+
+                <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end' }}>
+                    <button onClick={onClose} style={{
+                        padding: '12px 24px',
+                        border: '2px solid #e5e7eb',
+                        background: 'white',
+                        borderRadius: '8px',
+                        cursor: 'pointer',
+                        fontWeight: '600',
+                        color: '#666'
+                    }}>
+                        Cancel
+                    </button>
+                    <button onClick={handleSave} style={{
+                        padding: '12px 24px',
+                        border: 'none',
+                        background: '#667eea',
+                        color: 'white',
+                        borderRadius: '8px',
+                        cursor: 'pointer',
+                        fontWeight: '600'
+                    }}>
+                        Save Preferences ({localAllergens.length})
+                    </button>
+                </div>
+            </div>
+        </div>
+    );
+}
+
+function AllergenBadge({ allergens }) {
+    if (allergens.length === 0) return null;
+
+    return (
+        <div style={{
+            display: 'flex',
+            gap: '6px',
+            flexWrap: 'wrap',
+            marginTop: '8px'
+        }}>
+            {allergens.map(allergenId => {
+                const allergen = ALLERGEN_OPTIONS.find(a => a.id === allergenId);
+                return allergen ? (
+                    <span key={allergenId} style={{
+                        background: '#fee2e2',
+                        color: '#991b1b',
+                        padding: '4px 8px',
+                        borderRadius: '12px',
+                        fontSize: '11px',
+                        fontWeight: '600',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '4px'
+                    }}>
+                        {allergen.icon} {allergen.name}
+                    </span>
+                ) : null;
+            })}
+        </div>
     );
 }
 
@@ -138,7 +289,6 @@ function WorkoutCard({ workout, isReal }) {
                     {isReal ? 'LIVE DATA' : 'DEMO'}
                 </span>
             </div>
-
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: '16px' }}>
                 <WorkoutStat label="Type" value={workout.type} icon="🏃" />
                 <WorkoutStat label="Distance" value={workout.distance} icon="📏" />
@@ -161,7 +311,7 @@ function WorkoutStat({ label, value, icon }) {
     );
 }
 
-function RealRestaurantCard({ restaurant }) {
+function RealRestaurantCard({ restaurant, userAllergens }) {
     const [expanded, setExpanded] = useState(false);
 
     return (
@@ -183,7 +333,6 @@ function RealRestaurantCard({ restaurant }) {
                  e.currentTarget.style.boxShadow = '0 2px 8px rgba(0,0,0,0.1)';
              }}>
 
-            {/* Restaurant Header with Logo */}
             <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px' }}>
                 {restaurant.logo && (
                     <div style={{
@@ -213,7 +362,6 @@ function RealRestaurantCard({ restaurant }) {
                 </span>
             </div>
 
-            {/* Banner Image */}
             {restaurant.banner && (
                 <div style={{
                     width: '100%',
@@ -226,7 +374,6 @@ function RealRestaurantCard({ restaurant }) {
                 }} />
             )}
 
-            {/* Menu Items Preview */}
             <div style={{ marginBottom: '12px' }}>
                 <h4 style={{ margin: '0 0 8px 0', fontSize: '14px', color: '#666', textTransform: 'uppercase' }}>
                     Sample Menu Items
@@ -246,7 +393,6 @@ function RealRestaurantCard({ restaurant }) {
                 ))}
             </div>
 
-            {/* Expand/Collapse Button */}
             {restaurant.menu.length > 3 && (
                 <button style={{
                     width: '100%',
@@ -263,37 +409,31 @@ function RealRestaurantCard({ restaurant }) {
                 </button>
             )}
 
-            {/* Order Button */}
-            <a
-                href={restaurant.url}
-                target="_blank"
-                rel="noopener noreferrer"
-                style={{
-                    display: 'block',
-                    marginTop: '12px',
-                    padding: '12px',
-                    background: '#667eea',
-                    color: 'white',
-                    textAlign: 'center',
-                    borderRadius: '8px',
-                    textDecoration: 'none',
-                    fontWeight: 'bold'
-                }}
-                onClick={(e) => e.stopPropagation()}
-            >
+            <a href={restaurant.url} target="_blank" rel="noopener noreferrer"
+               style={{
+                   display: 'block',
+                   marginTop: '12px',
+                   padding: '12px',
+                   background: '#667eea',
+                   color: 'white',
+                   textAlign: 'center',
+                   borderRadius: '8px',
+                   textDecoration: 'none',
+                   fontWeight: 'bold'
+               }}
+               onClick={(e) => e.stopPropagation()}>
                 View on Korpa.mk →
             </a>
         </div>
     );
 }
 
-function RestaurantList({ restaurants, loading }) {
+function RestaurantList({ restaurants, loading, userAllergens, onOpenSettings }) {
     if (loading) {
         return (
             <div style={{ textAlign: 'center', padding: '40px' }}>
                 <div style={{ fontSize: '48px', marginBottom: '16px' }}>🍽️</div>
                 <p style={{ color: '#666', fontSize: '18px' }}>Loading restaurants from Korpa.mk...</p>
-                <p style={{ color: '#999', fontSize: '14px' }}>This may take up to 30 seconds on first load</p>
             </div>
         );
     }
@@ -301,32 +441,58 @@ function RestaurantList({ restaurants, loading }) {
     if (!restaurants || restaurants.length === 0) {
         return (
             <div style={{ textAlign: 'center', padding: '40px' }}>
-                <p style={{ color: '#666' }}>No restaurants available. Make sure the backend is running!</p>
+                <p style={{ color: '#666' }}>No restaurants available.</p>
             </div>
         );
     }
 
     return (
         <div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', flexWrap: 'wrap', gap: '12px' }}>
                 <h2 style={{ margin: 0, color: '#333' }}>
                     Available Restaurants ({restaurants.length})
                 </h2>
-                <span style={{
-                    background: '#10b981',
-                    color: 'white',
-                    padding: '6px 12px',
-                    borderRadius: '12px',
-                    fontSize: '12px',
-                    fontWeight: 'bold'
-                }}>
-                    ✓ LIVE FROM KORPA.MK
-                </span>
+                <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
+                    {userAllergens.length > 0 && (
+                        <span style={{
+                            background: '#fee2e2',
+                            color: '#991b1b',
+                            padding: '6px 12px',
+                            borderRadius: '12px',
+                            fontSize: '12px',
+                            fontWeight: 'bold'
+                        }}>
+                            🚫 {userAllergens.length} Restrictions Active
+                        </span>
+                    )}
+                    <button onClick={onOpenSettings} style={{
+                        background: '#667eea',
+                        color: 'white',
+                        border: 'none',
+                        padding: '8px 16px',
+                        borderRadius: '8px',
+                        cursor: 'pointer',
+                        fontSize: '14px',
+                        fontWeight: '600'
+                    }}>
+                        ⚙️ Manage Allergens
+                    </button>
+                    <span style={{
+                        background: '#10b981',
+                        color: 'white',
+                        padding: '6px 12px',
+                        borderRadius: '12px',
+                        fontSize: '12px',
+                        fontWeight: 'bold'
+                    }}>
+                        ✓ LIVE FROM KORPA.MK
+                    </span>
+                </div>
             </div>
 
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: '20px' }}>
                 {restaurants.map(restaurant => (
-                    <RealRestaurantCard key={restaurant.id} restaurant={restaurant} />
+                    <RealRestaurantCard key={restaurant.id} restaurant={restaurant} userAllergens={userAllergens} />
                 ))}
             </div>
         </div>
@@ -339,23 +505,27 @@ function Dashboard() {
     const [workout, setWorkout] = useState(mockWorkout);
     const [isRealData, setIsRealData] = useState(false);
     const [loading, setLoading] = useState(false);
-
     const [restaurants, setRestaurants] = useState([]);
     const [restaurantsLoading, setRestaurantsLoading] = useState(true);
+
+    const [userAllergens, setUserAllergens] = useState([]);
+    const [allergenModalOpen, setAllergenModalOpen] = useState(false);
 
     useEffect(() => {
         const params = new URLSearchParams(window.location.search);
         const code = params.get('code');
-
         if (code && !accessToken) {
             handleOAuthCallback(code);
+        }
+
+        const savedAllergens = localStorage.getItem('instameal_allergens');
+        if (savedAllergens) {
+            setUserAllergens(JSON.parse(savedAllergens));
         }
     }, [accessToken]);
 
     useEffect(() => {
-        if (accessToken) {
-            loadStravaActivities();
-        }
+        if (accessToken) loadStravaActivities();
     }, [accessToken]);
 
     useEffect(() => {
@@ -403,9 +573,22 @@ function Dashboard() {
         }
     }
 
+    function handleSaveAllergens(allergens) {
+        setUserAllergens(allergens);
+        localStorage.setItem('instameal_allergens', JSON.stringify(allergens));
+        console.log('✅ Saved allergen preferences:', allergens);
+    }
+
     return (
         <div style={{ minHeight: '100vh', background: '#f3f4f6' }}>
-            <Header athleteName={athleteName} />
+            <Header athleteName={athleteName} onSettingsClick={() => setAllergenModalOpen(true)} />
+
+            <AllergenModal
+                isOpen={allergenModalOpen}
+                onClose={() => setAllergenModalOpen(false)}
+                selectedAllergens={userAllergens}
+                onSave={handleSaveAllergens}
+            />
 
             <main style={{ maxWidth: '1200px', margin: '0 auto', padding: '32px 20px' }}>
                 {!accessToken && (
@@ -421,39 +604,20 @@ function Dashboard() {
                         <p style={{ margin: '0 0 24px 0', color: '#666' }}>
                             Get personalized meal recommendations based on your workouts
                         </p>
-                        <button
-                            onClick={handleStravaLogin}
-                            disabled={STRAVA_CLIENT_ID === 'YOUR_CLIENT_ID_HERE'}
-                            style={{
-                                background: STRAVA_CLIENT_ID === 'YOUR_CLIENT_ID_HERE' ? '#94a3b8' : '#fc5200',
-                                color: 'white',
-                                border: 'none',
-                                padding: '12px 24px',
-                                borderRadius: '8px',
-                                cursor: STRAVA_CLIENT_ID === 'YOUR_CLIENT_ID_HERE' ? 'not-allowed' : 'pointer',
-                                fontWeight: 'bold',
-                                fontSize: '16px'
-                            }}
-                        >
+                        <button onClick={handleStravaLogin}
+                                disabled={STRAVA_CLIENT_ID === 'YOUR_CLIENT_ID_HERE'}
+                                style={{
+                                    background: STRAVA_CLIENT_ID === 'YOUR_CLIENT_ID_HERE' ? '#94a3b8' : '#fc5200',
+                                    color: 'white',
+                                    border: 'none',
+                                    padding: '12px 24px',
+                                    borderRadius: '8px',
+                                    cursor: STRAVA_CLIENT_ID === 'YOUR_CLIENT_ID_HERE' ? 'not-allowed' : 'pointer',
+                                    fontWeight: 'bold',
+                                    fontSize: '16px'
+                                }}>
                             {STRAVA_CLIENT_ID === 'YOUR_CLIENT_ID_HERE' ? 'Add API Key First' : 'Connect Strava'}
                         </button>
-                    </div>
-                )}
-
-                {STRAVA_CLIENT_ID === 'YOUR_CLIENT_ID_HERE' && (
-                    <div style={{
-                        background: '#fee2e2',
-                        border: '2px solid #ef4444',
-                        borderRadius: '12px',
-                        padding: '20px',
-                        marginBottom: '24px'
-                    }}>
-                        <p style={{ margin: '0 0 8px 0', fontWeight: 'bold', color: '#991b1b' }}>
-                            ⚠️ Setup Required
-                        </p>
-                        <p style={{ margin: 0, color: '#991b1b', fontSize: '14px' }}>
-                            Please add your Strava Client ID on line 6 of the code
-                        </p>
                     </div>
                 )}
 
@@ -465,8 +629,43 @@ function Dashboard() {
 
                 {!loading && <WorkoutCard workout={workout} isReal={isRealData} />}
 
-                {/* NEW: Real restaurant list */}
-                <RestaurantList restaurants={restaurants} loading={restaurantsLoading} />
+                {userAllergens.length > 0 && (
+                    <div style={{
+                        background: '#fee2e2',
+                        border: '2px solid #ef4444',
+                        borderRadius: '12px',
+                        padding: '16px',
+                        marginBottom: '24px'
+                    }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start' }}>
+                            <div>
+                                <h3 style={{ margin: '0 0 8px 0', color: '#991b1b', fontSize: '16px' }}>
+                                    🚫 Active Dietary Restrictions
+                                </h3>
+                                <AllergenBadge allergens={userAllergens} />
+                            </div>
+                            <button onClick={() => setAllergenModalOpen(true)} style={{
+                                background: 'white',
+                                border: '2px solid #ef4444',
+                                color: '#991b1b',
+                                padding: '6px 12px',
+                                borderRadius: '6px',
+                                cursor: 'pointer',
+                                fontSize: '12px',
+                                fontWeight: '600'
+                            }}>
+                                Edit
+                            </button>
+                        </div>
+                    </div>
+                )}
+
+                <RestaurantList
+                    restaurants={restaurants}
+                    loading={restaurantsLoading}
+                    userAllergens={userAllergens}
+                    onOpenSettings={() => setAllergenModalOpen(true)}
+                />
             </main>
         </div>
     );
