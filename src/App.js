@@ -20,14 +20,36 @@ const ALLERGEN_OPTIONS = [
     { id: 'chicken', name: 'Chicken', icon: '🐔' }
 ];
 
-const mockWorkout = {
-    type: 'Run',
-    distance: '8.2 km',
-    duration: '42 min',
-    intensity: 'High',
-    calories: 520,
-    date: 'Today'
+const ALLERGEN_KEYWORDS = {
+    gluten: ['gluten', 'wheat', 'bread', 'pasta', 'flour', 'пшеница', 'леб', 'тестенини', 'пица', 'бурек', 'нудлси'],
+    dairy: ['dairy', 'milk', 'cheese', 'cream', 'butter', 'млеко', 'сирење', 'павлака', 'путер', 'кашкавал', 'пармезан'],
+    eggs: ['egg', 'јајце', 'јајца', 'омлет'],
+    nuts: ['nut', 'almond', 'cashew', 'walnut', 'ореви', 'бадем', 'индиски ореви'],
+    soy: ['soy', 'соја', 'тофу'],
+    fish: ['fish', 'salmon', 'tuna', 'риба', 'лосос', 'туна', 'лаврак'],
+    shellfish: ['shrimp', 'prawn', 'crab', 'lobster', 'ракчиња', 'ракови', 'јастог', 'лигњи'],
+    sesame: ['sesame', 'сусам'],
+    mustard: ['mustard', 'сенф'],
+    celery: ['celery', 'целер'],
+    pork: ['pork', 'bacon', 'ham', 'свинско', 'шунка', 'сланина', 'пршут'],
+    beef: ['beef', 'говедско', 'телешко'],
+    chicken: ['chicken', 'пилешко', 'пиле']
 };
+
+const mockWorkout = {
+    type: 'Run', distance: '8.2 km', duration: '42 min',
+    intensity: 'High', calories: 520, date: 'Today'
+};
+
+function itemContainsRestriction(item, restrictionId) {
+    const keywords = ALLERGEN_KEYWORDS[restrictionId] || [restrictionId];
+    const text = (item.name + ' ' + (item.description || '')).toLowerCase();
+    return keywords.some(kw => text.includes(kw.toLowerCase()));
+}
+
+function itemIsBlocked(item, allergens, tempRestrictions) {
+    return [...allergens, ...tempRestrictions].some(r => itemContainsRestriction(item, r));
+}
 
 function handleStravaLogin() {
     const scope = 'read,activity:read_all';
@@ -36,18 +58,11 @@ function handleStravaLogin() {
 }
 
 async function exchangeToken(code) {
-    try {
-        const response = await fetch(`${BACKEND_URL}/api/strava/token`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ code })
-        });
-        const data = await response.json();
-        return data;
-    } catch (error) {
-        console.error('Error exchanging token:', error);
-        throw error;
-    }
+    const response = await fetch(`${BACKEND_URL}/api/strava/token`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code })
+    });
+    return await response.json();
 }
 
 async function fetchStravaActivities(accessToken) {
@@ -55,65 +70,128 @@ async function fetchStravaActivities(accessToken) {
         const response = await fetch('https://www.strava.com/api/v3/athlete/activities?per_page=10', {
             headers: { 'Authorization': `Bearer ${accessToken}` }
         });
-        if (!response.ok) throw new Error('Failed to fetch activities');
+        if (!response.ok) throw new Error('Failed');
         return await response.json();
-    } catch (error) {
-        console.error('Error fetching Strava activities:', error);
-        return [];
-    }
+    } catch (e) { return []; }
 }
 
 async function fetchKorpaRestaurants() {
     try {
-        console.log('🍽️ Fetching restaurants from Korpa...');
         const response = await fetch(`${BACKEND_URL}/api/korpa/restaurants`);
         const data = await response.json();
-        if (data.success) {
-            console.log(`✅ Loaded ${data.count} restaurants`);
-            return data.restaurants;
+        return data.success ? data.restaurants : [];
+    } catch (e) { return []; }
+}
+
+function getDistanceKm(lat1, lon1, lat2, lon2) {
+    const R = 6371;
+    const dLat = (lat2 - lat1) * Math.PI / 180;
+    const dLon = (lon2 - lon1) * Math.PI / 180;
+    const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+        Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+        Math.sin(dLon/2) * Math.sin(dLon/2);
+    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+}
+
+function sortByDistance(restaurants, userLat, userLon) {
+    // Skopje center coordinates as fallback for restaurants without coords
+    const SKOPJE_LAT = 41.9981;
+    const SKOPJE_LON = 21.4254;
+    return [...restaurants].map(r => {
+        const lat = r.latitude || SKOPJE_LAT;
+        const lon = r.longitude || SKOPJE_LON;
+        const dist = getDistanceKm(userLat, userLon, lat, lon);
+        return { ...r, distanceKm: dist };
+    }).sort((a, b) => a.distanceKm - b.distanceKm);
+}
+
+async function getMealRecommendations(workout, restaurants, userAllergens, tempRestrictions) {
+    const allMeals = [];
+
+    // Sort restaurants by distance — closest first
+    const hasDistance = restaurants[0]?.distanceKm !== undefined;
+    const sortedRestaurants = hasDistance
+        ? [...restaurants].sort((a, b) => (a.distanceKm || 99) - (b.distanceKm || 99))
+        : restaurants;
+
+    // Only use closest 5 restaurants so AI focuses on nearby options
+    const restaurantsToUse = hasDistance ? sortedRestaurants.slice(0, 5) : sortedRestaurants;
+
+    restaurantsToUse.forEach(r => {
+        if (r.menu) {
+            const distLabel = r.distanceKm !== undefined
+                ? ` [${r.distanceKm < 1 ? (r.distanceKm * 1000).toFixed(0) + 'm away' : r.distanceKm.toFixed(1) + 'km away'}]`
+                : '';
+            r.menu.slice(0, 15).forEach(item => {
+                if (!itemIsBlocked(item, userAllergens, tempRestrictions)) {
+                    allMeals.push({
+                        name: item.name,
+                        description: item.description || '',
+                        restaurant: r.name + distLabel,
+                        restaurantUrl: r.url,
+                        restaurantName: r.name
+                    });
+                }
+            });
         }
-        return [];
-    } catch (error) {
-        console.error('Error fetching restaurants:', error);
-        return [];
-    }
+    });
+    if (allMeals.length === 0) return [];
+
+    const allRestrictions = [...userAllergens, ...tempRestrictions];
+    const allergenText = allRestrictions.length > 0 ? `User cannot eat: ${allRestrictions.join(', ')}.` : 'No dietary restrictions.';
+    const hour = new Date().getHours();
+    const mealTiming = hour < 10 ? 'breakfast' : hour < 14 ? 'lunch' : hour < 17 ? 'pre-workout snack' : hour < 20 ? 'post-workout dinner' : 'late dinner';
+
+    const distanceNote = hasDistance
+        ? `IMPORTANT: The meals are listed from the NEAREST restaurant first. You MUST prioritize meals from restaurants that are closest to the user (those labeled with smaller distance). Only suggest a farther restaurant if it has a significantly better nutritional fit.`
+        : '';
+
+    const userContext = `
+Time: ${hour}:00 (${mealTiming})
+Workout: ${workout.type}, ${workout.distance}, ${workout.duration}, intensity: ${workout.intensity}, calories burned: ${workout.calories}
+Goal: improve endurance, maintain weight
+Meal timing: ${mealTiming} after a ${workout.intensity.toLowerCase()} ${workout.type}
+${allergenText}
+${distanceNote}
+`;
+
+    try {
+        const response = await fetch(`${BACKEND_URL}/api/recommend-meals`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ userContext, meals: allMeals })
+        });
+        const data = await response.json();
+        if (!data.success) return [];
+        return data.recommendations.map(rec => {
+            const match = allMeals.find(m => m.name === rec.meal || rec.meal.includes(m.name) || m.name.includes(rec.meal));
+            return { ...rec, restaurantUrl: match?.restaurantUrl || null, restaurant: match?.restaurantName || rec.restaurant || null };
+        });
+    } catch (e) { return []; }
 }
 
 function formatActivity(activity) {
-    const distanceKm = (activity.distance / 1000).toFixed(1);
-    const durationMin = Math.round(activity.moving_time / 60);
     return {
         type: activity.type,
-        distance: `${distanceKm} km`,
-        duration: `${durationMin} min`,
+        distance: `${(activity.distance / 1000).toFixed(1)} km`,
+        duration: `${Math.round(activity.moving_time / 60)} min`,
         intensity: activity.average_heartrate ? 'High' : 'Moderate',
         calories: Math.round(activity.kilojoules * 0.239) || 'N/A',
         date: new Date(activity.start_date).toLocaleDateString()
     };
 }
 
+// ── HEADER ──────────────────────────────────────────────────────────────────
 function Header({ athleteName, onSettingsClick }) {
     return (
-        <header style={{
-            background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
-            padding: '20px',
-            color: 'white',
-            boxShadow: '0 2px 10px rgba(0,0,0,0.1)'
-        }}>
+        <header style={{ background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)', padding: '20px', color: 'white', boxShadow: '0 2px 10px rgba(0,0,0,0.1)' }}>
             <div style={{ maxWidth: '1200px', margin: '0 auto', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <h1 style={{ margin: 0, fontSize: '28px' }}>🍽️ InstaMeal</h1>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '20px' }}>
-                    {athleteName && (
-                        <span style={{ fontSize: '14px', opacity: 0.9 }}>
-                            Welcome, {athleteName}!
-                        </span>
-                    )}
-                    <nav style={{ display: 'flex', gap: '12px' }}>
-                        <button style={navButtonStyle}>Dashboard</button>
-                        <button style={navButtonStyle}>Profile</button>
-                        <button style={navButtonStyle} onClick={onSettingsClick}>
-                            ⚙️ Settings
-                        </button>
+                <h1 style={{ margin: 0, fontSize: '26px' }}>🍽️ InstaMeal</h1>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+                    {athleteName && <span style={{ fontSize: '14px', opacity: 0.9 }}>Welcome, {athleteName}!</span>}
+                    <nav style={{ display: 'flex', gap: '10px' }}>
+                        <button style={navBtnStyle}>Dashboard</button>
+                        <button style={navBtnStyle}>Profile</button>
+                        <button style={navBtnStyle} onClick={onSettingsClick}>⚙️ Settings</button>
                     </nav>
                 </div>
             </div>
@@ -121,111 +199,70 @@ function Header({ athleteName, onSettingsClick }) {
     );
 }
 
-function AllergenModal({ isOpen, onClose, selectedAllergens, onSave }) {
+// ── DIETARY MODAL (permanent + skip today) ──────────────────────────────────
+function DietaryModal({ isOpen, onClose, selectedAllergens, tempRestrictions, onSave, onSaveTemp }) {
     const [localAllergens, setLocalAllergens] = useState(selectedAllergens);
+    const [localTemp, setLocalTemp] = useState(tempRestrictions);
+    const [tab, setTab] = useState('permanent');
 
-    useEffect(() => {
-        setLocalAllergens(selectedAllergens);
-    }, [selectedAllergens]);
+    useEffect(() => setLocalAllergens(selectedAllergens), [selectedAllergens]);
+    useEffect(() => setLocalTemp(tempRestrictions), [tempRestrictions]);
 
     if (!isOpen) return null;
 
-    const toggleAllergen = (allergenId) => {
-        setLocalAllergens(prev =>
-            prev.includes(allergenId)
-                ? prev.filter(id => id !== allergenId)
-                : [...prev, allergenId]
-        );
-    };
+    const toggle = (id, list, setList) =>
+        setList(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
 
-    const handleSave = () => {
-        onSave(localAllergens);
-        onClose();
-    };
+    const list = tab === 'permanent' ? localAllergens : localTemp;
+    const setList = tab === 'permanent' ? setLocalAllergens : setLocalTemp;
+    const accentColor = tab === 'permanent' ? '#ef4444' : '#f59e0b';
+    const accentBg = tab === 'permanent' ? '#fee2e2' : '#fffbeb';
 
     return (
-        <div style={{
-            position: 'fixed',
-            top: 0,
-            left: 0,
-            right: 0,
-            bottom: 0,
-            background: 'rgba(0,0,0,0.7)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            zIndex: 1000
-        }} onClick={onClose}>
-            <div style={{
-                background: 'white',
-                borderRadius: '16px',
-                padding: '32px',
-                maxWidth: '600px',
-                width: '90%',
-                maxHeight: '80vh',
-                overflow: 'auto'
-            }} onClick={(e) => e.stopPropagation()}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
-                    <h2 style={{ margin: 0, color: '#333' }}>🚫 Dietary Restrictions</h2>
-                    <button onClick={onClose} style={{
-                        background: 'none',
-                        border: 'none',
-                        fontSize: '24px',
-                        cursor: 'pointer',
-                        color: '#999'
-                    }}>×</button>
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }} onClick={onClose}>
+            <div style={{ background: 'white', borderRadius: '16px', padding: '28px', maxWidth: '620px', width: '90%', maxHeight: '85vh', overflow: 'auto' }} onClick={e => e.stopPropagation()}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+                    <h2 style={{ margin: 0, color: '#333' }}>🥗 Dietary Preferences</h2>
+                    <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: '22px', cursor: 'pointer', color: '#999' }}>×</button>
                 </div>
 
-                <p style={{ color: '#666', marginBottom: '24px' }}>
-                    Select items you can't or don't want to eat:
-                </p>
-
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: '12px', marginBottom: '24px' }}>
-                    {ALLERGEN_OPTIONS.map(allergen => (
-                        <button
-                            key={allergen.id}
-                            onClick={() => toggleAllergen(allergen.id)}
-                            style={{
-                                padding: '16px',
-                                border: `2px solid ${localAllergens.includes(allergen.id) ? '#ef4444' : '#e5e7eb'}`,
-                                background: localAllergens.includes(allergen.id) ? '#fee2e2' : 'white',
-                                borderRadius: '12px',
-                                cursor: 'pointer',
-                                transition: 'all 0.2s',
-                                textAlign: 'center'
-                            }}
-                        >
-                            <div style={{ fontSize: '32px', marginBottom: '8px' }}>{allergen.icon}</div>
-                            <div style={{ fontSize: '14px', fontWeight: '500', color: '#333' }}>{allergen.name}</div>
-                            {localAllergens.includes(allergen.id) && (
-                                <div style={{ fontSize: '12px', color: '#ef4444', marginTop: '4px' }}>✓ Excluded</div>
-                            )}
-                        </button>
+                <div style={{ display: 'flex', gap: '8px', marginBottom: '16px' }}>
+                    {[['permanent', '🚫 Always Exclude'], ['temp', '⏱️ Skip Today Only']].map(([key, label]) => (
+                        <button key={key} onClick={() => setTab(key)} style={{
+                            padding: '8px 16px', borderRadius: '8px', border: 'none', cursor: 'pointer',
+                            fontWeight: '600', fontSize: '13px',
+                            background: tab === key ? (key === 'permanent' ? '#ef4444' : '#f59e0b') : '#f3f4f6',
+                            color: tab === key ? 'white' : '#666'
+                        }}>{label}</button>
                     ))}
                 </div>
 
-                <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end' }}>
-                    <button onClick={onClose} style={{
-                        padding: '12px 24px',
-                        border: '2px solid #e5e7eb',
-                        background: 'white',
-                        borderRadius: '8px',
-                        cursor: 'pointer',
-                        fontWeight: '600',
-                        color: '#666'
-                    }}>
-                        Cancel
-                    </button>
-                    <button onClick={handleSave} style={{
-                        padding: '12px 24px',
-                        border: 'none',
-                        background: '#667eea',
-                        color: 'white',
-                        borderRadius: '8px',
-                        cursor: 'pointer',
-                        fontWeight: '600'
-                    }}>
-                        Save Preferences ({localAllergens.length})
+                <p style={{ color: '#666', fontSize: '13px', marginBottom: '16px' }}>
+                    {tab === 'permanent' ? 'Saved permanently — allergies, dietary choices.' : 'Only for this session — resets when you close the browser.'}
+                </p>
+
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(130px, 1fr))', gap: '10px', marginBottom: '20px' }}>
+                    {ALLERGEN_OPTIONS.map(a => {
+                        const selected = list.includes(a.id);
+                        return (
+                            <button key={a.id} onClick={() => toggle(a.id, list, setList)} style={{
+                                padding: '12px 8px', border: `2px solid ${selected ? accentColor : '#e5e7eb'}`,
+                                background: selected ? accentBg : 'white', borderRadius: '10px',
+                                cursor: 'pointer', textAlign: 'center', transition: 'all 0.15s'
+                            }}>
+                                <div style={{ fontSize: '26px', marginBottom: '4px' }}>{a.icon}</div>
+                                <div style={{ fontSize: '12px', fontWeight: '600', color: '#333' }}>{a.name}</div>
+                                {selected && <div style={{ fontSize: '11px', color: accentColor, marginTop: '2px' }}>✓ {tab === 'permanent' ? 'Excluded' : 'Skip today'}</div>}
+                            </button>
+                        );
+                    })}
+                </div>
+
+                <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end' }}>
+                    <button onClick={onClose} style={{ padding: '10px 20px', border: '2px solid #e5e7eb', background: 'white', borderRadius: '8px', cursor: 'pointer', fontWeight: '600', color: '#666' }}>Cancel</button>
+                    <button onClick={() => { onSave(localAllergens); onSaveTemp(localTemp); onClose(); }}
+                        style={{ padding: '10px 20px', border: 'none', background: '#667eea', color: 'white', borderRadius: '8px', cursor: 'pointer', fontWeight: '600' }}>
+                        Save ({localAllergens.length} permanent · {localTemp.length} today)
                     </button>
                 </div>
             </div>
@@ -233,310 +270,272 @@ function AllergenModal({ isOpen, onClose, selectedAllergens, onSave }) {
     );
 }
 
-function AllergenBadge({ allergens }) {
-    if (allergens.length === 0) return null;
-
+function RestrictionsBanner({ allergens, tempRestrictions, onEdit }) {
+    const all = [...allergens, ...tempRestrictions];
+    if (all.length === 0) return null;
     return (
-        <div style={{
-            display: 'flex',
-            gap: '6px',
-            flexWrap: 'wrap',
-            marginTop: '8px'
-        }}>
-            {allergens.map(allergenId => {
-                const allergen = ALLERGEN_OPTIONS.find(a => a.id === allergenId);
-                return allergen ? (
-                    <span key={allergenId} style={{
-                        background: '#fee2e2',
-                        color: '#991b1b',
-                        padding: '4px 8px',
-                        borderRadius: '12px',
-                        fontSize: '11px',
-                        fontWeight: '600',
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '4px'
-                    }}>
-                        {allergen.icon} {allergen.name}
-                    </span>
-                ) : null;
-            })}
+        <div style={{ background: '#fff7ed', border: '2px solid #f59e0b', borderRadius: '12px', padding: '14px 18px', marginBottom: '20px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '12px' }}>
+                <div>
+                    <h3 style={{ margin: '0 0 8px 0', color: '#92400e', fontSize: '14px' }}>🥗 Active Food Preferences</h3>
+                    <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                        {allergens.map(id => {
+                            const a = ALLERGEN_OPTIONS.find(x => x.id === id);
+                            return a ? <span key={id} style={{ background: '#fee2e2', color: '#991b1b', padding: '3px 8px', borderRadius: '10px', fontSize: '12px', fontWeight: '600' }}>{a.icon} {a.name}</span> : null;
+                        })}
+                        {tempRestrictions.map(id => {
+                            const a = ALLERGEN_OPTIONS.find(x => x.id === id);
+                            return a ? <span key={`t-${id}`} style={{ background: '#fffbeb', color: '#92400e', padding: '3px 8px', borderRadius: '10px', fontSize: '12px', fontWeight: '600', border: '1px solid #f59e0b' }}>⏱️ {a.icon} {a.name}</span> : null;
+                        })}
+                    </div>
+                </div>
+                <button onClick={onEdit} style={{ background: 'white', border: '2px solid #f59e0b', color: '#92400e', padding: '5px 12px', borderRadius: '6px', cursor: 'pointer', fontSize: '12px', fontWeight: '600', flexShrink: 0 }}>Edit</button>
+            </div>
         </div>
     );
 }
 
+// ── WORKOUT CARD ─────────────────────────────────────────────────────────────
 function WorkoutCard({ workout, isReal }) {
+    const stats = [
+        { label: 'Type', value: workout.type, icon: '🏃' },
+        { label: 'Distance', value: workout.distance, icon: '📏' },
+        { label: 'Duration', value: workout.duration, icon: '⏱️' },
+        { label: 'Intensity', value: workout.intensity, icon: '🔥' },
+        { label: 'Calories', value: workout.calories, icon: '⚡' },
+        { label: 'Date', value: workout.date, icon: '📅' },
+    ];
     return (
-        <div style={{
-            background: 'white',
-            borderRadius: '12px',
-            padding: '24px',
-            boxShadow: '0 4px 6px rgba(0,0,0,0.1)',
-            marginBottom: '24px'
-        }}>
+        <div style={{ background: 'white', borderRadius: '12px', padding: '24px', boxShadow: '0 4px 6px rgba(0,0,0,0.1)', marginBottom: '24px' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-                <h2 style={{ margin: 0, color: '#333' }}>
-                    {isReal ? 'Latest Workout' : "Today's Workout (Demo)"}
-                </h2>
-                <span style={{
-                    background: isReal ? '#10b981' : '#f59e0b',
-                    color: 'white',
-                    padding: '4px 12px',
-                    borderRadius: '12px',
-                    fontSize: '12px',
-                    fontWeight: 'bold'
-                }}>
+                <h2 style={{ margin: 0, color: '#333' }}>{isReal ? 'Latest Workout' : "Today's Workout (Demo)"}</h2>
+                <span style={{ background: isReal ? '#10b981' : '#f59e0b', color: 'white', padding: '4px 12px', borderRadius: '12px', fontSize: '12px', fontWeight: 'bold' }}>
                     {isReal ? 'LIVE DATA' : 'DEMO'}
                 </span>
             </div>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: '16px' }}>
-                <WorkoutStat label="Type" value={workout.type} icon="🏃" />
-                <WorkoutStat label="Distance" value={workout.distance} icon="📏" />
-                <WorkoutStat label="Duration" value={workout.duration} icon="⏱️" />
-                <WorkoutStat label="Intensity" value={workout.intensity} icon="🔥" />
-                <WorkoutStat label="Calories" value={workout.calories} icon="⚡" />
-                <WorkoutStat label="Date" value={workout.date} icon="📅" />
-            </div>
-        </div>
-    );
-}
-
-function WorkoutStat({ label, value, icon }) {
-    return (
-        <div style={{ textAlign: 'center' }}>
-            <div style={{ fontSize: '24px', marginBottom: '4px' }}>{icon}</div>
-            <div style={{ fontSize: '14px', color: '#666', marginBottom: '4px' }}>{label}</div>
-            <div style={{ fontSize: '18px', fontWeight: 'bold', color: '#333' }}>{value}</div>
-        </div>
-    );
-}
-
-function RealRestaurantCard({ restaurant, userAllergens }) {
-    const [expanded, setExpanded] = useState(false);
-
-    return (
-        <div style={{
-            background: 'white',
-            borderRadius: '12px',
-            padding: '20px',
-            boxShadow: '0 2px 8px rgba(0,0,0,0.1)',
-            transition: 'transform 0.2s, box-shadow 0.2s',
-            cursor: 'pointer'
-        }}
-             onClick={() => setExpanded(!expanded)}
-             onMouseEnter={(e) => {
-                 e.currentTarget.style.transform = 'translateY(-4px)';
-                 e.currentTarget.style.boxShadow = '0 8px 16px rgba(0,0,0,0.15)';
-             }}
-             onMouseLeave={(e) => {
-                 e.currentTarget.style.transform = 'translateY(0)';
-                 e.currentTarget.style.boxShadow = '0 2px 8px rgba(0,0,0,0.1)';
-             }}>
-
-            <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px' }}>
-                {restaurant.logo && (
-                    <div style={{
-                        width: '60px',
-                        height: '60px',
-                        borderRadius: '12px',
-                        backgroundImage: `url(${restaurant.logo})`,
-                        backgroundSize: 'cover',
-                        backgroundPosition: 'center'
-                    }} />
-                )}
-                <div style={{ flex: 1 }}>
-                    <h3 style={{ margin: '0 0 4px 0', color: '#333' }}>{restaurant.name}</h3>
-                    <p style={{ margin: 0, color: '#666', fontSize: '14px' }}>
-                        {restaurant.menuCount} menu items available
-                    </p>
-                </div>
-                <span style={{
-                    background: '#10b981',
-                    color: 'white',
-                    padding: '4px 8px',
-                    borderRadius: '6px',
-                    fontSize: '12px',
-                    fontWeight: 'bold'
-                }}>
-                    REAL
-                </span>
-            </div>
-
-            {restaurant.banner && (
-                <div style={{
-                    width: '100%',
-                    height: '150px',
-                    borderRadius: '8px',
-                    backgroundImage: `url(${restaurant.banner})`,
-                    backgroundSize: 'cover',
-                    backgroundPosition: 'center',
-                    marginBottom: '12px'
-                }} />
-            )}
-
-            <div style={{ marginBottom: '12px' }}>
-                <h4 style={{ margin: '0 0 8px 0', fontSize: '14px', color: '#666', textTransform: 'uppercase' }}>
-                    Sample Menu Items
-                </h4>
-                {restaurant.menu.slice(0, expanded ? restaurant.menu.length : 3).map((item, idx) => (
-                    <div key={idx} style={{
-                        display: 'flex',
-                        justifyContent: 'space-between',
-                        padding: '8px 0',
-                        borderBottom: '1px solid #f3f4f6'
-                    }}>
-                        <span style={{ fontSize: '14px', color: '#333' }}>{item.name}</span>
-                        <span style={{ fontSize: '14px', fontWeight: 'bold', color: '#667eea' }}>
-                            {item.price}
-                        </span>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(110px, 1fr))', gap: '16px' }}>
+                {stats.map(s => (
+                    <div key={s.label} style={{ textAlign: 'center' }}>
+                        <div style={{ fontSize: '22px', marginBottom: '4px' }}>{s.icon}</div>
+                        <div style={{ fontSize: '13px', color: '#666', marginBottom: '3px' }}>{s.label}</div>
+                        <div style={{ fontSize: '17px', fontWeight: 'bold', color: '#333' }}>{s.value}</div>
                     </div>
                 ))}
             </div>
+        </div>
+    );
+}
 
-            {restaurant.menu.length > 3 && (
-                <button style={{
-                    width: '100%',
-                    padding: '8px',
-                    background: '#f3f4f6',
-                    border: 'none',
-                    borderRadius: '6px',
-                    cursor: 'pointer',
-                    fontSize: '14px',
-                    color: '#666',
-                    fontWeight: '500'
-                }}>
-                    {expanded ? 'Show Less ▲' : `Show All ${restaurant.menu.length} Items ▼`}
-                </button>
+// ── AI RECOMMENDATIONS ───────────────────────────────────────────────────────
+function RecommendationsSection({ recommendations, loading, done, workout, onRefresh }) {
+    if (loading) return (
+        <div style={{ background: 'white', borderRadius: '16px', padding: '32px', textAlign: 'center', marginBottom: '24px', boxShadow: '0 4px 6px rgba(0,0,0,0.1)' }}>
+            <div style={{ fontSize: '44px', marginBottom: '12px' }}>🤖</div>
+            <p style={{ color: '#666', fontSize: '17px', margin: '0 0 6px' }}>Analyzing your workout and finding the best meals...</p>
+            <p style={{ color: '#999', fontSize: '13px', margin: 0 }}>This may take up to 30 seconds</p>
+        </div>
+    );
+    if (!done) return null;
+    if (recommendations.length === 0) return (
+        <div style={{ background: '#fee2e2', borderRadius: '12px', padding: '18px', marginBottom: '24px', textAlign: 'center' }}>
+            <p style={{ margin: 0, color: '#991b1b' }}>⚠️ No recommendations found. Make sure Ollama is running and restaurants are loaded.</p>
+        </div>
+    );
+    const hour = new Date().getHours();
+    const timing = hour < 17 ? 'Pre-workout' : 'Post-workout';
+    return (
+        <div style={{ background: 'white', borderRadius: '16px', padding: '24px', marginBottom: '24px', boxShadow: '0 4px 6px rgba(0,0,0,0.1)', border: '2px solid #f59e0b' }}>
+            <h2 style={{ margin: '0 0 4px', color: '#333' }}>🤖 AI Meal Recommendations</h2>
+            <p style={{ margin: '0 0 18px', color: '#666', fontSize: '13px' }}>
+                Based on your {workout.type} ({workout.calories} cal burned) · {timing} timing · Dietary restrictions applied
+            </p>
+            <div style={{ display: 'grid', gap: '12px' }}>
+                {recommendations.map((rec, idx) => (
+                    <div key={idx} style={{
+                        background: idx === 0 ? '#fffbeb' : '#f9fafb',
+                        border: `2px solid ${idx === 0 ? '#f59e0b' : '#e5e7eb'}`,
+                        borderRadius: '12px', padding: '16px',
+                        display: 'flex', gap: '14px', alignItems: 'flex-start'
+                    }}>
+                        <div style={{
+                            background: idx === 0 ? '#f59e0b' : '#667eea',
+                            color: 'white', width: '32px', height: '32px', borderRadius: '50%',
+                            display: 'flex', alignItems: 'center', justifyContent: 'center',
+                            fontWeight: 'bold', fontSize: '15px', flexShrink: 0
+                        }}>{idx + 1}</div>
+                        <div style={{ flex: 1 }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '4px' }}>
+                                <strong style={{ color: '#333', fontSize: '15px' }}>{rec.meal}</strong>
+                                {idx === 0 && <span style={{ background: '#f59e0b', color: 'white', padding: '2px 8px', borderRadius: '10px', fontSize: '11px', fontWeight: 'bold' }}>TOP PICK</span>}
+                            </div>
+                            {rec.restaurant && (
+                                <div style={{ marginBottom: '5px' }}>
+                                    {rec.restaurantUrl
+                                        ? <a href={rec.restaurantUrl} target="_blank" rel="noopener noreferrer" style={{ color: '#667eea', fontSize: '13px', textDecoration: 'none', fontWeight: '600' }}>🏪 {rec.restaurant} → Order on Korpa.mk</a>
+                                        : <span style={{ color: '#667eea', fontSize: '13px', fontWeight: '600' }}>🏪 {rec.restaurant}</span>
+                                    }
+                                </div>
+                            )}
+                            <p style={{ margin: 0, color: '#666', fontSize: '13px', lineHeight: '1.5' }}>{rec.reason}</p>
+                        </div>
+                    </div>
+                ))}
+            </div>
+            <button onClick={onRefresh} style={{ marginTop: '14px', background: 'none', border: '2px solid #667eea', color: '#667eea', padding: '7px 18px', borderRadius: '8px', cursor: 'pointer', fontSize: '13px', fontWeight: '600' }}>
+                🔄 Refresh Recommendations
+            </button>
+        </div>
+    );
+}
+
+// ── RESTAURANT CARD ──────────────────────────────────────────────────────────
+function RealRestaurantCard({ restaurant, userAllergens, tempRestrictions }) {
+    const [expanded, setExpanded] = useState(false);
+    const visibleItems = restaurant.menu.filter(item => !itemIsBlocked(item, userAllergens, tempRestrictions));
+    const blockedCount = restaurant.menu.length - visibleItems.length;
+    const displayItems = expanded ? visibleItems : visibleItems.slice(0, 4);
+
+    return (
+        <div style={{ background: 'white', borderRadius: '12px', padding: '18px', boxShadow: '0 2px 8px rgba(0,0,0,0.1)', transition: 'transform 0.2s, box-shadow 0.2s', cursor: 'pointer' }}
+            onClick={() => setExpanded(!expanded)}
+            onMouseEnter={e => { e.currentTarget.style.transform = 'translateY(-3px)'; e.currentTarget.style.boxShadow = '0 8px 16px rgba(0,0,0,0.12)'; }}
+            onMouseLeave={e => { e.currentTarget.style.transform = 'translateY(0)'; e.currentTarget.style.boxShadow = '0 2px 8px rgba(0,0,0,0.1)'; }}>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '10px' }}>
+                {restaurant.logo && <div style={{ width: '52px', height: '52px', borderRadius: '10px', backgroundImage: `url(${restaurant.logo})`, backgroundSize: 'cover', flexShrink: 0 }} />}
+                <div style={{ flex: 1 }}>
+                    <h3 style={{ margin: '0 0 2px', color: '#333', fontSize: '16px' }}>{restaurant.name}</h3>
+                    <p style={{ margin: 0, color: '#666', fontSize: '12px' }}>
+                        {visibleItems.length} items available
+                        {blockedCount > 0 && <span style={{ color: '#ef4444', marginLeft: '5px' }}>· {blockedCount} hidden</span>}
+                    </p>
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '3px' }}>
+                    <span style={{ background: '#10b981', color: 'white', padding: '3px 7px', borderRadius: '5px', fontSize: '11px', fontWeight: 'bold' }}>LIVE</span>
+                    {restaurant.distanceKm !== undefined && (
+                        <span style={{ background: '#f3f4f6', color: '#667eea', padding: '2px 7px', borderRadius: '5px', fontSize: '11px', fontWeight: '600' }}>
+                            📍 {restaurant.distanceKm < 1 ? (restaurant.distanceKm * 1000).toFixed(0) + 'm' : restaurant.distanceKm.toFixed(1) + 'km'}
+                        </span>
+                    )}
+                </div>
+            </div>
+
+            {restaurant.banner && <div style={{ width: '100%', height: '130px', borderRadius: '8px', backgroundImage: `url(${restaurant.banner})`, backgroundSize: 'cover', backgroundPosition: 'center', marginBottom: '10px' }} />}
+
+            {visibleItems.length === 0 ? (
+                <div style={{ padding: '14px', background: '#fee2e2', borderRadius: '8px', textAlign: 'center', marginBottom: '10px' }}>
+                    <p style={{ margin: 0, color: '#991b1b', fontSize: '13px' }}>🚫 All items blocked by your dietary restrictions</p>
+                </div>
+            ) : (
+                <div style={{ marginBottom: '10px' }}>
+                    {displayItems.map((item, idx) => (
+                        <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', padding: '7px 0', borderBottom: '1px solid #f3f4f6', gap: '8px' }}>
+                            <div>
+                                <span style={{ fontSize: '13px', color: '#333' }}>{item.name}</span>
+                                {item.description && <p style={{ margin: '1px 0 0', fontSize: '11px', color: '#aaa' }}>{item.description.slice(0, 60)}{item.description.length > 60 ? '…' : ''}</p>}
+                            </div>
+                            {item.price && item.price !== '0' && <span style={{ fontSize: '13px', fontWeight: 'bold', color: '#667eea', flexShrink: 0 }}>{item.price}</span>}
+                        </div>
+                    ))}
+                    {visibleItems.length > 4 && (
+                        <button style={{ width: '100%', padding: '7px', background: '#f3f4f6', border: 'none', borderRadius: '6px', cursor: 'pointer', fontSize: '13px', color: '#666', fontWeight: '500', marginTop: '6px' }}>
+                            {expanded ? 'Show Less ▲' : `Show All ${visibleItems.length} Items ▼`}
+                        </button>
+                    )}
+                </div>
             )}
 
             <a href={restaurant.url} target="_blank" rel="noopener noreferrer"
-               style={{
-                   display: 'block',
-                   marginTop: '12px',
-                   padding: '12px',
-                   background: '#667eea',
-                   color: 'white',
-                   textAlign: 'center',
-                   borderRadius: '8px',
-                   textDecoration: 'none',
-                   fontWeight: 'bold'
-               }}
-               onClick={(e) => e.stopPropagation()}>
-                View on Korpa.mk →
+                style={{ display: 'block', padding: '10px', background: '#667eea', color: 'white', textAlign: 'center', borderRadius: '8px', textDecoration: 'none', fontWeight: 'bold', fontSize: '14px' }}
+                onClick={e => e.stopPropagation()}>
+                Order on Korpa.mk →
             </a>
         </div>
     );
 }
 
-function RestaurantList({ restaurants, loading, userAllergens, onOpenSettings }) {
-    if (loading) {
-        return (
-            <div style={{ textAlign: 'center', padding: '40px' }}>
-                <div style={{ fontSize: '48px', marginBottom: '16px' }}>🍽️</div>
-                <p style={{ color: '#666', fontSize: '18px' }}>Loading restaurants from Korpa.mk...</p>
-            </div>
-        );
-    }
+// ── NEARBY SECTION ──────────────────────────────────────────────────────────
+function NearbySection({ nearby, loading }) {
+    if (!loading && nearby.length === 0) return null;
+    return (
+        <div style={{ marginBottom: '28px' }}>
+            <h2 style={{ margin: '0 0 14px', color: '#333', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                📍 Restaurants Near You
+                {loading && <span style={{ fontSize: '14px', color: '#999', fontWeight: 'normal' }}>Loading...</span>}
+            </h2>
+            {loading ? (
+                <div style={{ textAlign: 'center', padding: '20px', color: '#666' }}>Finding nearby restaurants...</div>
+            ) : (
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: '14px' }}>
+                    {nearby.map((r, idx) => (
+                        <div key={idx} style={{ background: 'white', borderRadius: '12px', padding: '16px', boxShadow: '0 2px 8px rgba(0,0,0,0.08)', border: '2px solid #e0e7ff' }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '6px' }}>
+                                <h3 style={{ margin: 0, color: '#333', fontSize: '15px' }}>{r.name}</h3>
+                                <span style={{ background: r.openNow ? '#dcfce7' : '#fee2e2', color: r.openNow ? '#166534' : '#991b1b', padding: '2px 7px', borderRadius: '8px', fontSize: '11px', fontWeight: '600', flexShrink: 0, marginLeft: '6px' }}>
+                                    {r.openNow ? '✓ Open' : '✗ Closed'}
+                                </span>
+                            </div>
+                            <p style={{ margin: '0 0 6px', color: '#666', fontSize: '12px' }}>{r.address}</p>
+                            {r.rating && <p style={{ margin: 0, fontSize: '13px', color: '#f59e0b', fontWeight: '600' }}>⭐ {r.rating}</p>}
+                        </div>
+                    ))}
+                </div>
+            )}
+        </div>
+    );
+}
 
-    if (!restaurants || restaurants.length === 0) {
-        return (
-            <div style={{ textAlign: 'center', padding: '40px' }}>
-                <p style={{ color: '#666' }}>No restaurants available.</p>
-            </div>
-        );
-    }
+// ── RESTAURANT LIST ──────────────────────────────────────────────────────────
+function RestaurantList({ restaurants, loading, userAllergens, tempRestrictions, onOpenSettings }) {
+    if (loading) return (
+        <div style={{ textAlign: 'center', padding: '40px' }}>
+            <div style={{ fontSize: '44px', marginBottom: '12px' }}>🍽️</div>
+            <p style={{ color: '#666', fontSize: '17px', margin: '0 0 6px' }}>Loading restaurants from Korpa.mk...</p>
+            <p style={{ color: '#999', fontSize: '13px', margin: 0 }}>First load takes ~30 seconds</p>
+        </div>
+    );
+    if (!restaurants || restaurants.length === 0) return (
+        <div style={{ textAlign: 'center', padding: '40px', background: 'white', borderRadius: '12px', boxShadow: '0 2px 8px rgba(0,0,0,0.08)' }}>
+            <div style={{ fontSize: '44px', marginBottom: '12px' }}>🏪</div>
+            <p style={{ color: '#666', margin: 0 }}>Click "Load Korpa Restaurants" or "Find Nearby Restaurants" to get started.</p>
+        </div>
+    );
 
+    const allRestrictions = [...userAllergens, ...tempRestrictions];
     return (
         <div>
-            <div style={{
-                display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'center',
-                marginBottom: '20px',
-                flexWrap: 'wrap',
-                gap: '12px'
-            }}>
-                <h2 style={{margin: 0, color: '#333'}}>
-                    Available Restaurants ({restaurants.length})
-                </h2>
-                <div style={{display: 'flex', gap: '12px', alignItems: 'center'}}>
-                    {userAllergens.length > 0 && (
-                        <span style={{
-                            background: '#fee2e2',
-                            color: '#991b1b',
-                            padding: '6px 12px',
-                            borderRadius: '12px',
-                            fontSize: '12px',
-                            fontWeight: 'bold'
-                        }}>
-                            🚫 {userAllergens.length} Restrictions Active
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '18px', flexWrap: 'wrap', gap: '10px' }}>
+                <h2 style={{ margin: 0, color: '#333' }}>Available Restaurants ({restaurants.length})</h2>
+                <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+                    {allRestrictions.length > 0 && (
+                        <span style={{ background: '#fee2e2', color: '#991b1b', padding: '5px 10px', borderRadius: '10px', fontSize: '12px', fontWeight: 'bold' }}>
+                            🚫 {allRestrictions.length} Restrictions Active
                         </span>
                     )}
-                    <button onClick={onOpenSettings} style={{
-                        background: '#667eea',
-                        color: 'white',
-                        border: 'none',
-                        padding: '8px 16px',
-                        borderRadius: '8px',
-                        cursor: 'pointer',
-                        fontSize: '14px',
-                        fontWeight: '600'
-                    }}>
-                        ⚙️ Manage Allergens
+                    <button onClick={onOpenSettings} style={{ background: '#667eea', color: 'white', border: 'none', padding: '7px 14px', borderRadius: '7px', cursor: 'pointer', fontSize: '13px', fontWeight: '600' }}>
+                        ⚙️ Manage Preferences
                     </button>
-                    <span style={{
-                        background: '#10b981',
-                        color: 'white',
-                        padding: '6px 12px',
-                        borderRadius: '12px',
-                        fontSize: '12px',
-                        fontWeight: 'bold'
-                    }}>
-                        ✓ LIVE FROM KORPA.MK
-                    </span>
+                    <span style={{ background: '#10b981', color: 'white', padding: '5px 10px', borderRadius: '10px', fontSize: '12px', fontWeight: 'bold' }}>✓ LIVE FROM KORPA.MK</span>
                 </div>
             </div>
-
-            <div style={{display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: '20px'}}>
-                {restaurants.map((restaurant, idx) => {
-                    // Google Places data (no menu)
-                    if (!restaurant.menu) {
-                        return (
-                            <div key={idx} style={{
-                                background: 'white',
-                                borderRadius: '12px',
-                                padding: '20px',
-                                boxShadow: '0 2px 8px rgba(0,0,0,0.1)'
-                            }}>
-                                <h3 style={{margin: '0 0 8px 0', color: '#333'}}>{restaurant.name}</h3>
-                                <p style={{
-                                    margin: '0 0 8px 0',
-                                    color: '#666',
-                                    fontSize: '14px'
-                                }}>{restaurant.address}</p>
-                                <p style={{
-                                    margin: '0 0 8px 0',
-                                    fontSize: '14px',
-                                    fontWeight: 'bold',
-                                    color: '#667eea'
-                                }}>
-                                    ⭐ Rating: {restaurant.rating}
-                                </p>
-                                <p style={{margin: 0, color: '#666', fontSize: '12px'}}>
-                                    {restaurant.openNow ? '✓ Open Now' : '✗ Closed'}
-                                </p>
-                            </div>
-                        );
-                    }
-                    // Korpa data (with menu)
-                    return <RealRestaurantCard key={restaurant.id} restaurant={restaurant}
-                                               userAllergens={userAllergens}/>;
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: '18px' }}>
+                {restaurants.map((r, idx) => {
+                    if (!r.menu) return (
+                        <div key={idx} style={{ background: 'white', borderRadius: '12px', padding: '18px', boxShadow: '0 2px 8px rgba(0,0,0,0.08)' }}>
+                            <h3 style={{ margin: '0 0 6px', color: '#333' }}>{r.name}</h3>
+                            <p style={{ margin: '0 0 5px', color: '#666', fontSize: '13px' }}>{r.address}</p>
+                            <p style={{ margin: '0 0 5px', fontSize: '13px', fontWeight: 'bold', color: '#667eea' }}>⭐ {r.rating}</p>
+                            <p style={{ margin: 0, color: r.openNow ? '#10b981' : '#ef4444', fontSize: '12px' }}>{r.openNow ? '✓ Open Now' : '✗ Closed'}</p>
+                        </div>
+                    );
+                    return <RealRestaurantCard key={r.id || idx} restaurant={r} userAllergens={userAllergens} tempRestrictions={tempRestrictions} />;
                 })}
             </div>
         </div>
     );
 }
 
+// ── DASHBOARD ────────────────────────────────────────────────────────────────
 function Dashboard() {
     const [accessToken, setAccessToken] = useState(null);
     const [athleteName, setAthleteName] = useState(null);
@@ -544,230 +543,152 @@ function Dashboard() {
     const [isRealData, setIsRealData] = useState(false);
     const [loading, setLoading] = useState(false);
     const [restaurants, setRestaurants] = useState([]);
-    const [restaurantsLoading, setRestaurantsLoading] = useState(true);
-
+    const [restaurantsLoading, setRestaurantsLoading] = useState(false);
     const [userAllergens, setUserAllergens] = useState([]);
+    const [tempRestrictions, setTempRestrictions] = useState([]);
     const [allergenModalOpen, setAllergenModalOpen] = useState(false);
+    const [recommendations, setRecommendations] = useState([]);
+    const [recsLoading, setRecsLoading] = useState(false);
+    const [recsDone, setRecsDone] = useState(false);
+    const [userLocation, setUserLocation] = useState(null);
+    const [nearbyRestaurants, setNearbyRestaurants] = useState([]);
+    const [nearbyLoading, setNearbyLoading] = useState(false);
 
     useEffect(() => {
         const params = new URLSearchParams(window.location.search);
         const code = params.get('code');
-        if (code && !accessToken) {
-            handleOAuthCallback(code);
-        }
-
-        const savedAllergens = localStorage.getItem('instameal_allergens');
-        if (savedAllergens) {
-            setUserAllergens(JSON.parse(savedAllergens));
-        }
-    }, [accessToken]);
-
-    useEffect(() => {
-        if (accessToken) loadStravaActivities();
-    }, [accessToken]);
-
-    useEffect(() => {
-        loadRestaurants();
+        if (code && !accessToken) handleOAuthCallback(code);
+        const saved = localStorage.getItem('instameal_allergens');
+        if (saved) setUserAllergens(JSON.parse(saved));
+        const savedTemp = sessionStorage.getItem('instameal_temp');
+        if (savedTemp) setTempRestrictions(JSON.parse(savedTemp));
     }, []);
+
+    useEffect(() => { if (accessToken) loadStravaActivities(); }, [accessToken]);
 
     async function handleOAuthCallback(code) {
         setLoading(true);
         try {
-            const tokenData = await exchangeToken(code);
-            setAccessToken(tokenData.access_token);
-            setAthleteName(tokenData.athlete.firstname);
+            const d = await exchangeToken(code);
+            setAccessToken(d.access_token);
+            setAthleteName(d.athlete?.firstname);
             window.history.replaceState({}, document.title, '/');
-        } catch (error) {
-            console.error('Failed to authenticate:', error);
-        } finally {
-            setLoading(false);
-        }
+        } catch (e) { console.error(e); } finally { setLoading(false); }
     }
 
     async function loadStravaActivities() {
         setLoading(true);
         try {
-            const activities = await fetchStravaActivities(accessToken);
-            if (activities.length > 0) {
-                setWorkout(formatActivity(activities[0]));
-                setIsRealData(true);
-            }
-        } catch (error) {
-            console.error('Failed to load activities:', error);
-        } finally {
-            setLoading(false);
-        }
+            const acts = await fetchStravaActivities(accessToken);
+            if (acts.length > 0) { setWorkout(formatActivity(acts[0])); setIsRealData(true); }
+        } catch (e) { } finally { setLoading(false); }
     }
 
-    async function loadRestaurants() {
+    async function loadKorpa() {
         setRestaurantsLoading(true);
         try {
             const data = await fetchKorpaRestaurants();
-            setRestaurants(data);
-        } catch (error) {
-            console.error('Failed to load restaurants:', error);
-        } finally {
-            setRestaurantsLoading(false);
+            if (userLocation && data.length > 0) {
+                const sorted = sortByDistance(data, userLocation.lat, userLocation.lon);
+                setRestaurants(sorted);
+            } else {
+                setRestaurants(data);
+            }
         }
+        catch (e) { } finally { setRestaurantsLoading(false); }
     }
 
-    function handleSaveAllergens(allergens) {
-        setUserAllergens(allergens);
-        localStorage.setItem('instameal_allergens', JSON.stringify(allergens));
-        console.log('✅ Saved allergen preferences:', allergens);
-    }
-
-    async function findNearbyRestaurants() {
-        setRestaurantsLoading(true);
-        try {
-            navigator.geolocation.getCurrentPosition(async (position) => {
-                const { latitude, longitude } = position.coords;
-                console.log(`📍 Location: ${latitude}, ${longitude}`);
-
-                const response = await fetch(`${BACKEND_URL}/api/places/nearby-restaurants`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ latitude, longitude, radius: 1000 })
+    async function findNearby() {
+        setNearbyLoading(true);
+        navigator.geolocation.getCurrentPosition(async pos => {
+            const lat = pos.coords.latitude;
+            const lon = pos.coords.longitude;
+            setUserLocation({ lat, lon });
+            // Also re-sort Korpa restaurants by distance if already loaded
+            if (restaurants.length > 0) {
+                setRestaurants(sortByDistance(restaurants, lat, lon));
+            }
+            try {
+                const r = await fetch(`${BACKEND_URL}/api/places/nearby-restaurants`, {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ latitude: lat, longitude: lon, radius: 1000 })
                 });
+                const d = await r.json();
+                if (d.success) setNearbyRestaurants(d.restaurants);
+            } catch (e) { console.error(e); } finally { setNearbyLoading(false); }
+        }, () => { alert('Enable location access'); setNearbyLoading(false); });
+    }
 
-                const data = await response.json();
-                if (data.success) {
-                    console.log(`✅ Found ${data.count} nearby restaurants`);
-                    setRestaurants(data.restaurants);
-                } else {
-                    console.error('Error:', data.error);
-                }
-                setRestaurantsLoading(false);
-            }, (error) => {
-                console.error('Error getting location:', error);
-                alert('Please enable location access to find nearby restaurants');
-                setRestaurantsLoading(false);
-            });
-        } catch (error) {
-            console.error('Error finding restaurants:', error);
-            setRestaurantsLoading(false);
-        }
+    function saveAllergens(a) { setUserAllergens(a); localStorage.setItem('instameal_allergens', JSON.stringify(a)); }
+    function saveTemp(t) { setTempRestrictions(t); sessionStorage.setItem('instameal_temp', JSON.stringify(t)); }
+
+    async function getRecommendations() {
+        if (!restaurants.length) { alert('Load restaurants first!'); return; }
+        setRecsLoading(true); setRecsDone(false);
+        try {
+            const recs = await getMealRecommendations(workout, restaurants, userAllergens, tempRestrictions);
+            setRecommendations(recs); setRecsDone(true);
+        } catch (e) { } finally { setRecsLoading(false); }
     }
 
     return (
         <div style={{ minHeight: '100vh', background: '#f3f4f6' }}>
             <Header athleteName={athleteName} onSettingsClick={() => setAllergenModalOpen(true)} />
+            <DietaryModal isOpen={allergenModalOpen} onClose={() => setAllergenModalOpen(false)}
+                selectedAllergens={userAllergens} tempRestrictions={tempRestrictions}
+                onSave={saveAllergens} onSaveTemp={saveTemp} />
 
-            <AllergenModal
-                isOpen={allergenModalOpen}
-                onClose={() => setAllergenModalOpen(false)}
-                selectedAllergens={userAllergens}
-                onSave={handleSaveAllergens}
-            />
+            <main style={{ maxWidth: '1200px', margin: '0 auto', padding: '28px 20px' }}>
 
-            <main style={{maxWidth: '1200px', margin: '0 auto', padding: '32px 20px'}}>
                 {!accessToken && (
-                    <div style={{
-                        background: 'white',
-                        borderRadius: '16px',
-                        padding: '32px',
-                        textAlign: 'center',
-                        marginBottom: '24px',
-                        boxShadow: '0 4px 6px rgba(0,0,0,0.1)'
-                    }}>
-                        <h2 style={{margin: '0 0 12px 0', color: '#333'}}>Connect Your Strava Account</h2>
-                        <p style={{margin: '0 0 24px 0', color: '#666'}}>
-                            Get personalized meal recommendations based on your workouts
-                        </p>
-                        <button onClick={handleStravaLogin}
-                                disabled={STRAVA_CLIENT_ID === 'YOUR_CLIENT_ID_HERE'}
-                                style={{
-                                    background: STRAVA_CLIENT_ID === 'YOUR_CLIENT_ID_HERE' ? '#94a3b8' : '#fc5200',
-                                    color: 'white',
-                                    border: 'none',
-                                    padding: '12px 24px',
-                                    borderRadius: '8px',
-                                    cursor: STRAVA_CLIENT_ID === 'YOUR_CLIENT_ID_HERE' ? 'not-allowed' : 'pointer',
-                                    fontWeight: 'bold',
-                                    fontSize: '16px'
-                                }}>
-                            {STRAVA_CLIENT_ID === 'YOUR_CLIENT_ID_HERE' ? 'Add API Key First' : 'Connect Strava'}
+                    <div style={{ background: 'white', borderRadius: '14px', padding: '28px', textAlign: 'center', marginBottom: '22px', boxShadow: '0 4px 6px rgba(0,0,0,0.08)' }}>
+                        <h2 style={{ margin: '0 0 8px', color: '#333' }}>Connect Your Strava Account</h2>
+                        <p style={{ margin: '0 0 18px', color: '#666' }}>Get meal recommendations based on your real workouts</p>
+                        <button onClick={handleStravaLogin} style={{ background: '#fc5200', color: 'white', border: 'none', padding: '12px 26px', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold', fontSize: '15px' }}>
+                            🚴 Connect Strava
                         </button>
                     </div>
                 )}
 
-                {loading && (
-                    <div style={{textAlign: 'center', padding: '40px', color: '#666'}}>
-                        Loading your workout data...
-                    </div>
-                )}
+                {loading && <div style={{ textAlign: 'center', padding: '28px', color: '#666' }}>Loading workout data...</div>}
+                {!loading && <WorkoutCard workout={workout} isReal={isRealData} />}
 
-                {!loading && <WorkoutCard workout={workout} isReal={isRealData}/>}
+                <RestrictionsBanner allergens={userAllergens} tempRestrictions={tempRestrictions} onEdit={() => setAllergenModalOpen(true)} />
 
-                {userAllergens.length > 0 && (
-                    <div style={{
-                        background: '#fee2e2',
-                        border: '2px solid #ef4444',
-                        borderRadius: '12px',
-                        padding: '16px',
-                        marginBottom: '24px'
-                    }}>
-                        <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'start'}}>
-                            <div>
-                                <h3 style={{margin: '0 0 8px 0', color: '#991b1b', fontSize: '16px'}}>
-                                    🚫 Active Dietary Restrictions
-                                </h3>
-                                <AllergenBadge allergens={userAllergens}/>
-                            </div>
-                            <button onClick={() => setAllergenModalOpen(true)} style={{
-                                background: 'white',
-                                border: '2px solid #ef4444',
-                                color: '#991b1b',
-                                padding: '6px 12px',
-                                borderRadius: '6px',
-                                cursor: 'pointer',
-                                fontSize: '12px',
-                                fontWeight: '600'
-                            }}>
-                                Edit
-                            </button>
-                        </div>
-                    </div>
-                )}
-
-                <div style={{marginBottom: '24px'}}>
-                    <button onClick={findNearbyRestaurants} style={{
-                        background: '#667eea',
-                        color: 'white',
-                        border: 'none',
-                        padding: '12px 24px',
-                        borderRadius: '8px',
-                        cursor: 'pointer',
-                        fontSize: '16px',
-                        fontWeight: 'bold'
-                    }}>
+                {/* Action Buttons */}
+                <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', marginBottom: '22px' }}>
+                    <button onClick={loadKorpa} style={{ background: '#10b981', color: 'white', border: 'none', padding: '11px 20px', borderRadius: '8px', cursor: 'pointer', fontSize: '14px', fontWeight: 'bold' }}>
+                        🍽️ Load Korpa Restaurants
+                    </button>
+                    <button onClick={findNearby} style={{ background: '#667eea', color: 'white', border: 'none', padding: '11px 20px', borderRadius: '8px', cursor: 'pointer', fontSize: '14px', fontWeight: 'bold' }}>
                         📍 Find Nearby Restaurants
+                    </button>
+                    <button onClick={getRecommendations} disabled={recsLoading} style={{
+                        background: recsLoading ? '#a5b4fc' : 'linear-gradient(135deg, #f59e0b, #ef4444)',
+                        color: 'white', border: 'none', padding: '11px 20px', borderRadius: '8px',
+                        cursor: recsLoading ? 'not-allowed' : 'pointer', fontSize: '14px', fontWeight: 'bold'
+                    }}>
+                        {recsLoading ? '🤖 AI thinking...' : '🤖 Get AI Meal Recommendations'}
+                    </button>
+                    <button onClick={() => setAllergenModalOpen(true)} style={{ background: 'white', color: '#667eea', border: '2px solid #667eea', padding: '11px 20px', borderRadius: '8px', cursor: 'pointer', fontSize: '14px', fontWeight: 'bold' }}>
+                        🥗 Food Preferences
                     </button>
                 </div>
 
-                <RestaurantList
-                    restaurants={restaurants}
-                    loading={restaurantsLoading}
-                    userAllergens={userAllergens}
-                    onOpenSettings={() => setAllergenModalOpen(true)}
-                />
+                <RecommendationsSection recommendations={recommendations} loading={recsLoading} done={recsDone} workout={workout} onRefresh={getRecommendations} />
+
+                <NearbySection nearby={nearbyRestaurants} loading={nearbyLoading} />
+
+                <RestaurantList restaurants={restaurants} loading={restaurantsLoading} userAllergens={userAllergens} tempRestrictions={tempRestrictions} onOpenSettings={() => setAllergenModalOpen(true)} />
             </main>
         </div>
     );
 }
 
-const navButtonStyle = {
-    background: 'rgba(255,255,255,0.2)',
-    border: 'none',
-    color: 'white',
-    padding: '8px 16px',
-    borderRadius: '6px',
-    cursor: 'pointer',
-    fontWeight: '500'
+const navBtnStyle = {
+    background: 'rgba(255,255,255,0.2)', border: 'none', color: 'white',
+    padding: '7px 14px', borderRadius: '6px', cursor: 'pointer', fontWeight: '500', fontSize: '14px'
 };
 
-function App() {
-    return <Dashboard/>;
-}
-
+function App() { return <Dashboard />; }
 export default App;

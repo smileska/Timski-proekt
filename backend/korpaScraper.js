@@ -218,7 +218,9 @@ async function getKorpaData() {
         console.log('Fetching menus (limited to 3 to be respectful)...\n');
 
         const restaurantsWithMenus = [];
-        const maxRestaurants = Math.min(3, restaurants.length);
+        const maxRestaurants = require.main === module
+            ? Math.min(20, restaurants.length)
+            : Math.min(3, restaurants.length);
 
         for (let i = 0; i < maxRestaurants; i++) {
             const restaurant = restaurants[i];
