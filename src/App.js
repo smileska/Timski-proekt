@@ -562,6 +562,7 @@ function Dashboard() {
         if (saved) setUserAllergens(JSON.parse(saved));
         const savedTemp = sessionStorage.getItem('instameal_temp');
         if (savedTemp) setTempRestrictions(JSON.parse(savedTemp));
+        autoLoad();
     }, []);
 
     useEffect(() => { if (accessToken) loadStravaActivities(); }, [accessToken]);
@@ -584,39 +585,66 @@ function Dashboard() {
         } catch (e) { } finally { setLoading(false); }
     }
 
-    async function loadKorpa() {
-        setRestaurantsLoading(true);
-        try {
-            const data = await fetchKorpaRestaurants();
-            if (userLocation && data.length > 0) {
-                const sorted = sortByDistance(data, userLocation.lat, userLocation.lon);
-                setRestaurants(sorted);
-            } else {
-                setRestaurants(data);
-            }
-        }
-        catch (e) { } finally { setRestaurantsLoading(false); }
-    }
-
-    async function findNearby() {
+    async function autoLoad() {
         setNearbyLoading(true);
-        navigator.geolocation.getCurrentPosition(async pos => {
-            const lat = pos.coords.latitude;
-            const lon = pos.coords.longitude;
-            setUserLocation({ lat, lon });
-            // Also re-sort Korpa restaurants by distance if already loaded
-            if (restaurants.length > 0) {
-                setRestaurants(sortByDistance(restaurants, lat, lon));
+        setRestaurantsLoading(true);
+        navigator.geolocation.getCurrentPosition(
+            async pos => {
+                const lat = pos.coords.latitude;
+                const lon = pos.coords.longitude;
+                setUserLocation({ lat, lon });
+
+                const [nearbyResult, korpaResult] = await Promise.allSettled([
+                    fetch(`${BACKEND_URL}/api/places/nearby-restaurants`, {
+                        method: 'POST', headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ latitude: lat, longitude: lon, radius: 1000 })
+                    }).then(r => r.json()).catch(() => ({ success: false })),
+                    fetch(`${BACKEND_URL}/api/korpa/restaurants-near`, {
+                        method: 'POST', headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ latitude: lat, longitude: lon })
+                    }).then(r => r.json()).catch(() => ({ success: false }))
+                ]);
+
+                if (nearbyResult.status === 'fulfilled' && nearbyResult.value.success) {
+                    setNearbyRestaurants(nearbyResult.value.restaurants);
+                }
+                setNearbyLoading(false);
+
+                if (korpaResult.status === 'fulfilled' && korpaResult.value.success && korpaResult.value.restaurants.length > 0) {
+                    setRestaurants(korpaResult.value.restaurants);
+                } else {
+                    // Fallback: load from old endpoint, deduplicate, sort
+                    try {
+                        const data = await fetchKorpaRestaurants();
+                        const seen = new Set();
+                        const unique = data.filter(r => {
+                            const key = r.id || r.name;
+                            if (seen.has(key)) return false;
+                            seen.add(key);
+                            return true;
+                        });
+                        setRestaurants(unique.length > 0 ? sortByDistance(unique, lat, lon).slice(0, 10) : []);
+                    } catch (e) {}
+                }
+                setRestaurantsLoading(false);
+            },
+            async () => {
+                // Location denied — load unsorted, deduplicated
+                try {
+                    const data = await fetchKorpaRestaurants();
+                    const seen = new Set();
+                    const unique = data.filter(r => {
+                        const key = r.id || r.name;
+                        if (seen.has(key)) return false;
+                        seen.add(key);
+                        return true;
+                    });
+                    setRestaurants(unique.slice(0, 10));
+                } catch (e) {}
+                setRestaurantsLoading(false);
+                setNearbyLoading(false);
             }
-            try {
-                const r = await fetch(`${BACKEND_URL}/api/places/nearby-restaurants`, {
-                    method: 'POST', headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ latitude: lat, longitude: lon, radius: 1000 })
-                });
-                const d = await r.json();
-                if (d.success) setNearbyRestaurants(d.restaurants);
-            } catch (e) { console.error(e); } finally { setNearbyLoading(false); }
-        }, () => { alert('Enable location access'); setNearbyLoading(false); });
+        );
     }
 
     function saveAllergens(a) { setUserAllergens(a); localStorage.setItem('instameal_allergens', JSON.stringify(a)); }
@@ -657,18 +685,12 @@ function Dashboard() {
 
                 {/* Action Buttons */}
                 <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', marginBottom: '22px' }}>
-                    <button onClick={loadKorpa} style={{ background: '#10b981', color: 'white', border: 'none', padding: '11px 20px', borderRadius: '8px', cursor: 'pointer', fontSize: '14px', fontWeight: 'bold' }}>
-                        🍽️ Load Korpa Restaurants
-                    </button>
-                    <button onClick={findNearby} style={{ background: '#667eea', color: 'white', border: 'none', padding: '11px 20px', borderRadius: '8px', cursor: 'pointer', fontSize: '14px', fontWeight: 'bold' }}>
-                        📍 Find Nearby Restaurants
-                    </button>
-                    <button onClick={getRecommendations} disabled={recsLoading} style={{
-                        background: recsLoading ? '#a5b4fc' : 'linear-gradient(135deg, #f59e0b, #ef4444)',
+                    <button onClick={getRecommendations} disabled={recsLoading || restaurantsLoading} style={{
+                        background: (recsLoading || restaurantsLoading) ? '#a5b4fc' : 'linear-gradient(135deg, #f59e0b, #ef4444)',
                         color: 'white', border: 'none', padding: '11px 20px', borderRadius: '8px',
-                        cursor: recsLoading ? 'not-allowed' : 'pointer', fontSize: '14px', fontWeight: 'bold'
+                        cursor: (recsLoading || restaurantsLoading) ? 'not-allowed' : 'pointer', fontSize: '14px', fontWeight: 'bold'
                     }}>
-                        {recsLoading ? '🤖 AI thinking...' : '🤖 Get AI Meal Recommendations'}
+                        {recsLoading ? '🤖 AI thinking...' : restaurantsLoading ? '⏳ Loading restaurants...' : '🤖 Get AI Meal Suggestions'}
                     </button>
                     <button onClick={() => setAllergenModalOpen(true)} style={{ background: 'white', color: '#667eea', border: '2px solid #667eea', padding: '11px 20px', borderRadius: '8px', cursor: 'pointer', fontSize: '14px', fontWeight: 'bold' }}>
                         🥗 Food Preferences

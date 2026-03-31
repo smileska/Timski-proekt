@@ -302,6 +302,103 @@ app.post('/api/places/nearby-restaurants', async (req, res) => {
 });
 console.log('   ✓ POST /api/places/nearby-restaurants');
 
+// ── LOCATION-SORTED KORPA (reads JSON, sorts by distance) ────────────────────
+app.post('/api/korpa/restaurants-near', async (req, res) => {
+    console.log('restaurants-near endpoint hit');
+    const { latitude, longitude } = req.body;
+    if (!latitude || !longitude) {
+        return res.status(400).json({ success: false, error: 'lat/lon required', restaurants: [] });
+    }
+
+    function haversine(lat1, lon1, lat2, lon2) {
+        const R = 6371;
+        const dLat = (lat2 - lat1) * Math.PI / 180;
+        const dLon = (lon2 - lon1) * Math.PI / 180;
+        const a = Math.sin(dLat/2)**2 + Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dLon/2)**2;
+        return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+    }
+
+    try {
+        const jsonPath = path.join(__dirname, 'korpa-data.json');
+        if (!fs.existsSync(jsonPath)) {
+            return res.status(404).json({ success: false, error: 'korpa-data.json not found', restaurants: [] });
+        }
+        const raw = JSON.parse(fs.readFileSync(jsonPath, 'utf8'));
+
+        // Deduplicate by id/slug
+        const seen = new Set();
+        const unique = raw.filter(r => {
+            const key = r.id || r.slug || r.name;
+            if (seen.has(key)) return false;
+            seen.add(key);
+            return true;
+        });
+
+        // Only keep restaurants that have menus
+        const withMenus = unique.filter(r => r.menu && r.menu.length > 0);
+        const pool = withMenus.length > 0 ? withMenus : unique;
+
+        const withCoords = await addCoordinates(pool, GOOGLE_PLACES_API_KEY);
+        const sorted = withCoords
+            .map(r => ({
+                ...r,
+                distanceKm: (r.latitude && r.longitude)
+                    ? haversine(latitude, longitude, r.latitude, r.longitude)
+                    : 999
+            }))
+            .sort((a, b) => a.distanceKm - b.distanceKm)
+            .slice(0, 10); // Top 10 closest only
+
+        console.log(`Returning ${sorted.length} closest restaurants`);
+        res.json({ success: true, count: sorted.length, restaurants: sorted });
+    } catch (err) {
+        console.error('restaurants-near error:', err.message);
+        res.status(500).json({ success: false, error: err.message, restaurants: [] });
+    }
+});
+console.log('   ✓ POST /api/korpa/restaurants-near');
+
+// ── RESCRAPE: rebuild korpa-data.json cleanly ─────────────────────────────────
+app.post('/api/korpa/rescrape', async (req, res) => {
+    console.log('Rescrape endpoint hit - rebuilding korpa-data.json');
+    try {
+        const { scrapeKorpaRestaurants, scrapeRestaurantMenu } = require('./korpaScraper');
+        const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+        const allRestaurants = await scrapeKorpaRestaurants();
+        console.log(`Found ${allRestaurants.length} restaurants on Korpa`);
+
+        const withMenus = [];
+        const max = Math.min(20, allRestaurants.length);
+        for (let i = 0; i < max; i++) {
+            const r = allRestaurants[i];
+            console.log(`[${i+1}/${max}] Scraping menu for ${r.name}`);
+            const menuData = await scrapeRestaurantMenu(r.url);
+            withMenus.push({
+                id: r.slug,
+                name: r.name,
+                url: r.url,
+                logo: r.logo || '',
+                banner: r.banner || '',
+                menu: menuData.allItems || [],
+                menuCount: (menuData.allItems || []).length
+            });
+            if (i < max - 1) await sleep(3000);
+        }
+
+        const withCoords = await addCoordinates(withMenus, GOOGLE_PLACES_API_KEY);
+        const jsonPath = path.join(__dirname, 'korpa-data.json');
+        fs.writeFileSync(jsonPath, JSON.stringify(withCoords, null, 2));
+        cachedRestaurants = null; // Clear cache
+        console.log(`Rescrape done. Saved ${withCoords.length} restaurants.`);
+        res.json({ success: true, count: withCoords.length, restaurants: withCoords });
+    } catch (err) {
+        console.error('Rescrape error:', err.message);
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+console.log('   ✓ POST /api/korpa/rescrape');
+
 app.post('/api/recommend-meals', async (req, res) => {
     console.log('Meal recommendation endpoint hit');
     const { userContext, meals } = req.body;
