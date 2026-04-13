@@ -181,16 +181,17 @@ function formatActivity(activity) {
 }
 
 // ── HEADER ──────────────────────────────────────────────────────────────────
-function Header({ athleteName, onSettingsClick }) {
+function Header({ athleteName, onSettingsClick, currentPage, onNavigate }) {
+    const activeStyle = { background: 'rgba(255,255,255,0.35)', border: '1px solid rgba(255,255,255,0.6)', color: 'white', padding: '7px 14px', borderRadius: '6px', cursor: 'pointer', fontWeight: '700', fontSize: '14px' };
     return (
         <header style={{ background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)', padding: '20px', color: 'white', boxShadow: '0 2px 10px rgba(0,0,0,0.1)' }}>
             <div style={{ maxWidth: '1200px', margin: '0 auto', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <h1 style={{ margin: 0, fontSize: '26px' }}>🍽️ InstaMeal</h1>
+                <h1 style={{ margin: 0, fontSize: '26px', cursor: 'pointer' }} onClick={() => onNavigate('home')}>🍽️ InstaMeal</h1>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
                     {athleteName && <span style={{ fontSize: '14px', opacity: 0.9 }}>Welcome, {athleteName}!</span>}
                     <nav style={{ display: 'flex', gap: '10px' }}>
-                        <button style={navBtnStyle}>Dashboard</button>
-                        <button style={navBtnStyle}>Profile</button>
+                        <button style={currentPage === 'dashboard' ? activeStyle : navBtnStyle} onClick={() => onNavigate('dashboard')}>📊 Dashboard</button>
+                        <button style={currentPage === 'profile' ? activeStyle : navBtnStyle} onClick={() => onNavigate('profile')}>👤 Profile</button>
                         <button style={navBtnStyle} onClick={onSettingsClick}>⚙️ Settings</button>
                     </nav>
                 </div>
@@ -537,6 +538,7 @@ function RestaurantList({ restaurants, loading, userAllergens, tempRestrictions,
 
 // ── DASHBOARD ────────────────────────────────────────────────────────────────
 function Dashboard() {
+    const [currentPage, setCurrentPage] = useState('home'); // 'home' | 'dashboard' | 'profile'
     const [accessToken, setAccessToken] = useState(null);
     const [athleteName, setAthleteName] = useState(null);
     const [workout, setWorkout] = useState(mockWorkout);
@@ -661,11 +663,34 @@ function Dashboard() {
 
     return (
         <div style={{ minHeight: '100vh', background: '#f3f4f6' }}>
-            <Header athleteName={athleteName} onSettingsClick={() => setAllergenModalOpen(true)} />
+            <Header athleteName={athleteName} onSettingsClick={() => setAllergenModalOpen(true)} currentPage={currentPage} onNavigate={setCurrentPage} />
             <DietaryModal isOpen={allergenModalOpen} onClose={() => setAllergenModalOpen(false)}
                 selectedAllergens={userAllergens} tempRestrictions={tempRestrictions}
                 onSave={saveAllergens} onSaveTemp={saveTemp} />
 
+            {currentPage === 'dashboard' && (
+                <DashboardPage
+                    workout={workout} isRealData={isRealData}
+                    recommendations={recommendations} restaurants={restaurants}
+                    nearbyRestaurants={nearbyRestaurants} userAllergens={userAllergens}
+                    tempRestrictions={tempRestrictions} recsLoading={recsLoading}
+                    restaurantsLoading={restaurantsLoading} nearbyLoading={nearbyLoading}
+                    accessToken={accessToken} onGetRecommendations={getRecommendations}
+                    onNavigate={setCurrentPage}
+                />
+            )}
+
+            {currentPage === 'profile' && (
+                <ProfilePage
+                    athleteName={athleteName} accessToken={accessToken}
+                    userAllergens={userAllergens} tempRestrictions={tempRestrictions}
+                    workout={workout} isRealData={isRealData}
+                    onEditPreferences={() => setAllergenModalOpen(true)}
+                    onStravaLogin={handleStravaLogin} onNavigate={setCurrentPage}
+                />
+            )}
+
+            {currentPage === 'home' && (
             <main style={{ maxWidth: '1200px', margin: '0 auto', padding: '28px 20px' }}>
 
                 {!accessToken && (
@@ -703,9 +728,233 @@ function Dashboard() {
 
                 <RestaurantList restaurants={restaurants} loading={restaurantsLoading} userAllergens={userAllergens} tempRestrictions={tempRestrictions} onOpenSettings={() => setAllergenModalOpen(true)} />
             </main>
+            )}
         </div>
     );
 }
+
+// ── DASHBOARD PAGE ────────────────────────────────────────────────────────────
+function DashboardPage({ workout, isRealData, recommendations, restaurants, nearbyRestaurants, userAllergens, tempRestrictions, recsLoading, restaurantsLoading, nearbyLoading, accessToken, onGetRecommendations, onNavigate }) {
+    const totalMenuItems = restaurants.reduce((sum, r) => sum + (r.menu ? r.menu.length : 0), 0);
+    const allRestrictions = [...userAllergens, ...tempRestrictions];
+    const hour = new Date().getHours();
+    const mealTiming = hour < 10 ? 'Breakfast time' : hour < 14 ? 'Lunch time' : hour < 17 ? 'Afternoon snack' : hour < 20 ? 'Dinner time' : 'Late evening';
+
+    const statCards = [
+        { icon: '🏃', label: 'Last Workout', value: `${workout.type}`, sub: `${workout.distance} · ${workout.duration}`, color: '#667eea', bg: '#eef2ff' },
+        { icon: '⚡', label: 'Calories Burned', value: `${workout.calories}`, sub: isRealData ? 'From Strava' : 'Demo data', color: '#f59e0b', bg: '#fffbeb' },
+        { icon: '🍽️', label: 'Restaurants Loaded', value: restaurantsLoading ? '…' : `${restaurants.length}`, sub: `${totalMenuItems} menu items`, color: '#10b981', bg: '#f0fdf4' },
+        { icon: '📍', label: 'Nearby Places', value: nearbyLoading ? '…' : `${nearbyRestaurants.length}`, sub: 'Within 1km radius', color: '#8b5cf6', bg: '#f5f3ff' },
+        { icon: '🤖', label: 'AI Suggestions', value: recsLoading ? '…' : `${recommendations.length}`, sub: recommendations.length > 0 ? 'Ready to view' : 'Not generated yet', color: '#ef4444', bg: '#fef2f2' },
+        { icon: '🥗', label: 'Active Restrictions', value: `${allRestrictions.length}`, sub: allRestrictions.length > 0 ? allRestrictions.slice(0, 2).join(', ') + (allRestrictions.length > 2 ? '…' : '') : 'No restrictions', color: '#0891b2', bg: '#ecfeff' },
+    ];
+
+    return (
+        <main style={{ maxWidth: '1200px', margin: '0 auto', padding: '28px 20px' }}>
+            {/* Page title */}
+            <div style={{ marginBottom: '24px' }}>
+                <h2 style={{ margin: '0 0 4px', color: '#333', fontSize: '24px' }}>📊 Dashboard</h2>
+                <p style={{ margin: 0, color: '#666', fontSize: '14px' }}>{mealTiming} — here's your current InstaMeal overview</p>
+            </div>
+
+            {/* Stat grid */}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: '16px', marginBottom: '28px' }}>
+                {statCards.map((s, i) => (
+                    <div key={i} style={{ background: 'white', borderRadius: '14px', padding: '20px', boxShadow: '0 2px 8px rgba(0,0,0,0.07)', borderLeft: `4px solid ${s.color}` }}>
+                        <div style={{ fontSize: '28px', marginBottom: '8px' }}>{s.icon}</div>
+                        <div style={{ fontSize: '12px', color: '#999', marginBottom: '4px', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.5px' }}>{s.label}</div>
+                        <div style={{ fontSize: '22px', fontWeight: '800', color: s.color, marginBottom: '2px' }}>{s.value}</div>
+                        <div style={{ fontSize: '11px', color: '#aaa' }}>{s.sub}</div>
+                    </div>
+                ))}
+            </div>
+
+            {/* Quick actions */}
+            <div style={{ background: 'white', borderRadius: '14px', padding: '24px', boxShadow: '0 2px 8px rgba(0,0,0,0.07)', marginBottom: '24px' }}>
+                <h3 style={{ margin: '0 0 16px', color: '#333' }}>⚡ Quick Actions</h3>
+                <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+                    <button onClick={() => onNavigate('home')} style={{ background: 'linear-gradient(135deg, #667eea, #764ba2)', color: 'white', border: 'none', padding: '11px 22px', borderRadius: '8px', cursor: 'pointer', fontWeight: '600', fontSize: '14px' }}>
+                        🏠 Go to Home
+                    </button>
+                    <button onClick={onGetRecommendations} disabled={recsLoading || restaurantsLoading} style={{
+                        background: (recsLoading || restaurantsLoading) ? '#a5b4fc' : 'linear-gradient(135deg, #f59e0b, #ef4444)',
+                        color: 'white', border: 'none', padding: '11px 22px', borderRadius: '8px',
+                        cursor: (recsLoading || restaurantsLoading) ? 'not-allowed' : 'pointer', fontWeight: '600', fontSize: '14px'
+                    }}>
+                        {recsLoading ? '🤖 AI thinking…' : '🤖 Get Meal Suggestions'}
+                    </button>
+                    <button onClick={() => onNavigate('profile')} style={{ background: 'white', color: '#667eea', border: '2px solid #667eea', padding: '11px 22px', borderRadius: '8px', cursor: 'pointer', fontWeight: '600', fontSize: '14px' }}>
+                        👤 View Profile
+                    </button>
+                </div>
+            </div>
+
+            {/* Latest workout summary */}
+            <div style={{ background: 'white', borderRadius: '14px', padding: '24px', boxShadow: '0 2px 8px rgba(0,0,0,0.07)', marginBottom: '24px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+                    <h3 style={{ margin: 0, color: '#333' }}>🏃 Latest Workout</h3>
+                    <span style={{ background: isRealData ? '#10b981' : '#f59e0b', color: 'white', padding: '3px 10px', borderRadius: '10px', fontSize: '11px', fontWeight: 'bold' }}>
+                        {isRealData ? 'LIVE · STRAVA' : 'DEMO'}
+                    </span>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(100px, 1fr))', gap: '12px' }}>
+                    {[['🏃', 'Type', workout.type], ['📏', 'Distance', workout.distance], ['⏱️', 'Duration', workout.duration], ['🔥', 'Intensity', workout.intensity], ['⚡', 'Calories', workout.calories], ['📅', 'Date', workout.date]].map(([icon, label, val]) => (
+                        <div key={label} style={{ textAlign: 'center', padding: '12px', background: '#f9fafb', borderRadius: '10px' }}>
+                            <div style={{ fontSize: '20px', marginBottom: '4px' }}>{icon}</div>
+                            <div style={{ fontSize: '11px', color: '#999', marginBottom: '2px' }}>{label}</div>
+                            <div style={{ fontSize: '15px', fontWeight: '700', color: '#333' }}>{val}</div>
+                        </div>
+                    ))}
+                </div>
+            </div>
+
+            {/* AI Recommendations preview */}
+            {recommendations.length > 0 && (
+                <div style={{ background: 'white', borderRadius: '14px', padding: '24px', boxShadow: '0 2px 8px rgba(0,0,0,0.07)', border: '2px solid #f59e0b' }}>
+                    <h3 style={{ margin: '0 0 16px', color: '#333' }}>🤖 Latest AI Recommendations</h3>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                        {recommendations.slice(0, 3).map((rec, idx) => (
+                            <div key={idx} style={{ display: 'flex', gap: '12px', alignItems: 'flex-start', padding: '12px', background: idx === 0 ? '#fffbeb' : '#f9fafb', borderRadius: '10px', border: `1px solid ${idx === 0 ? '#f59e0b' : '#e5e7eb'}` }}>
+                                <div style={{ background: idx === 0 ? '#f59e0b' : '#667eea', color: 'white', width: '28px', height: '28px', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 'bold', fontSize: '13px', flexShrink: 0 }}>{idx + 1}</div>
+                                <div>
+                                    <div style={{ fontWeight: '700', color: '#333', fontSize: '14px', marginBottom: '2px' }}>{rec.meal}</div>
+                                    {rec.restaurant && <div style={{ fontSize: '12px', color: '#667eea', marginBottom: '2px' }}>🏪 {rec.restaurant}</div>}
+                                    <div style={{ fontSize: '12px', color: '#666' }}>{rec.reason}</div>
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                    <button onClick={() => onNavigate('home')} style={{ marginTop: '14px', background: 'none', border: '2px solid #667eea', color: '#667eea', padding: '7px 18px', borderRadius: '8px', cursor: 'pointer', fontSize: '13px', fontWeight: '600' }}>
+                        View full recommendations →
+                    </button>
+                </div>
+            )}
+        </main>
+    );
+}
+
+// ── PROFILE PAGE ───────────────────────────────────────────────────────────────
+function ProfilePage({ athleteName, accessToken, userAllergens, tempRestrictions, workout, isRealData, onEditPreferences, onStravaLogin, onNavigate }) {
+    const allRestrictions = [...userAllergens, ...tempRestrictions];
+    const joinedDate = new Date().toLocaleDateString('en-GB', { year: 'numeric', month: 'long', day: 'numeric' });
+
+    return (
+        <main style={{ maxWidth: '860px', margin: '0 auto', padding: '28px 20px' }}>
+            {/* Page title */}
+            <div style={{ marginBottom: '24px' }}>
+                <h2 style={{ margin: '0 0 4px', color: '#333', fontSize: '24px' }}>👤 Profile</h2>
+                <p style={{ margin: 0, color: '#666', fontSize: '14px' }}>Manage your account, connections, and dietary preferences</p>
+            </div>
+
+            {/* Athlete card */}
+            <div style={{ background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)', borderRadius: '16px', padding: '28px', color: 'white', marginBottom: '20px', boxShadow: '0 4px 14px rgba(102,126,234,0.4)' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '18px' }}>
+                    <div style={{ width: '68px', height: '68px', borderRadius: '50%', background: 'rgba(255,255,255,0.25)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '32px', flexShrink: 0 }}>
+                        {athleteName ? athleteName[0].toUpperCase() : '👤'}
+                    </div>
+                    <div>
+                        <h3 style={{ margin: '0 0 4px', fontSize: '22px' }}>{athleteName || 'InstaMeal User'}</h3>
+                        <p style={{ margin: '0 0 6px', opacity: 0.85, fontSize: '14px' }}>Member since {joinedDate}</p>
+                        <span style={{ background: 'rgba(255,255,255,0.25)', padding: '3px 12px', borderRadius: '12px', fontSize: '12px', fontWeight: '600' }}>
+                            {accessToken ? '✓ Strava Connected' : '⚠ Strava Not Connected'}
+                        </span>
+                    </div>
+                </div>
+            </div>
+
+            {/* Strava section */}
+            <div style={{ background: 'white', borderRadius: '14px', padding: '24px', boxShadow: '0 2px 8px rgba(0,0,0,0.07)', marginBottom: '20px' }}>
+                <h3 style={{ margin: '0 0 16px', color: '#333', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    🚴 Strava Integration
+                    <span style={{ background: accessToken ? '#dcfce7' : '#fee2e2', color: accessToken ? '#166534' : '#991b1b', padding: '2px 10px', borderRadius: '10px', fontSize: '12px', fontWeight: '600' }}>
+                        {accessToken ? 'Connected' : 'Disconnected'}
+                    </span>
+                </h3>
+                {accessToken ? (
+                    <div>
+                        <div style={{ background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: '10px', padding: '14px', marginBottom: '14px' }}>
+                            <p style={{ margin: '0 0 6px', color: '#166534', fontWeight: '600', fontSize: '14px' }}>✓ Your Strava account is linked</p>
+                            <p style={{ margin: 0, color: '#15803d', fontSize: '13px' }}>Workout data is being used for personalized meal recommendations.</p>
+                        </div>
+                        <div style={{ padding: '14px', background: '#f9fafb', borderRadius: '10px' }}>
+                            <p style={{ margin: '0 0 6px', fontWeight: '600', color: '#333', fontSize: '14px' }}>Latest: {workout.type}</p>
+                            <p style={{ margin: 0, color: '#666', fontSize: '13px' }}>{workout.distance} · {workout.duration} · {workout.calories} cal · {isRealData ? 'Live data' : 'Demo'}</p>
+                        </div>
+                    </div>
+                ) : (
+                    <div>
+                        <p style={{ margin: '0 0 16px', color: '#666', fontSize: '14px' }}>Connect your Strava account to get meal recommendations based on your real workout data.</p>
+                        <button onClick={onStravaLogin} style={{ background: '#fc5200', color: 'white', border: 'none', padding: '11px 24px', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold', fontSize: '14px' }}>
+                            🚴 Connect Strava
+                        </button>
+                    </div>
+                )}
+            </div>
+
+            {/* Dietary preferences */}
+            <div style={{ background: 'white', borderRadius: '14px', padding: '24px', boxShadow: '0 2px 8px rgba(0,0,0,0.07)', marginBottom: '20px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+                    <h3 style={{ margin: 0, color: '#333' }}>🥗 Dietary Preferences</h3>
+                    <button onClick={onEditPreferences} style={{ background: '#667eea', color: 'white', border: 'none', padding: '8px 16px', borderRadius: '8px', cursor: 'pointer', fontWeight: '600', fontSize: '13px' }}>
+                        ✏️ Edit
+                    </button>
+                </div>
+
+                <div style={{ marginBottom: '16px' }}>
+                    <p style={{ margin: '0 0 10px', fontWeight: '600', color: '#555', fontSize: '13px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>🚫 Always Excluded ({userAllergens.length})</p>
+                    {userAllergens.length > 0 ? (
+                        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                            {userAllergens.map(id => {
+                                const a = ALLERGEN_OPTIONS.find(x => x.id === id);
+                                return a ? <span key={id} style={{ background: '#fee2e2', color: '#991b1b', padding: '5px 12px', borderRadius: '10px', fontSize: '13px', fontWeight: '600' }}>{a.icon} {a.name}</span> : null;
+                            })}
+                        </div>
+                    ) : (
+                        <p style={{ margin: 0, color: '#aaa', fontSize: '13px', fontStyle: 'italic' }}>No permanent restrictions set</p>
+                    )}
+                </div>
+
+                <div>
+                    <p style={{ margin: '0 0 10px', fontWeight: '600', color: '#555', fontSize: '13px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>⏱️ Skip Today ({tempRestrictions.length})</p>
+                    {tempRestrictions.length > 0 ? (
+                        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                            {tempRestrictions.map(id => {
+                                const a = ALLERGEN_OPTIONS.find(x => x.id === id);
+                                return a ? <span key={id} style={{ background: '#fffbeb', color: '#92400e', border: '1px solid #f59e0b', padding: '5px 12px', borderRadius: '10px', fontSize: '13px', fontWeight: '600' }}>{a.icon} {a.name}</span> : null;
+                            })}
+                        </div>
+                    ) : (
+                        <p style={{ margin: 0, color: '#aaa', fontSize: '13px', fontStyle: 'italic' }}>No temporary restrictions for today</p>
+                    )}
+                </div>
+
+                {allRestrictions.length === 0 && (
+                    <div style={{ background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: '10px', padding: '12px', marginTop: '14px' }}>
+                        <p style={{ margin: 0, color: '#166534', fontSize: '13px' }}>✓ No dietary restrictions — you'll see all available menu items</p>
+                    </div>
+                )}
+            </div>
+
+            {/* App info */}
+            <div style={{ background: 'white', borderRadius: '14px', padding: '24px', boxShadow: '0 2px 8px rgba(0,0,0,0.07)', marginBottom: '20px' }}>
+                <h3 style={{ margin: '0 0 16px', color: '#333' }}>ℹ️ About InstaMeal</h3>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+                    {[['🍽️', 'Data Source', 'Korpa.mk (live scraping)'], ['🤖', 'AI Engine', 'Ollama llama3:8b (local)'], ['📍', 'Location', 'Skopje, Macedonia'], ['🔒', 'Privacy', 'All data stays local']].map(([icon, label, val]) => (
+                        <div key={label} style={{ padding: '12px', background: '#f9fafb', borderRadius: '10px' }}>
+                            <div style={{ fontSize: '13px', color: '#999', marginBottom: '3px' }}>{icon} {label}</div>
+                            <div style={{ fontSize: '14px', fontWeight: '600', color: '#333' }}>{val}</div>
+                        </div>
+                    ))}
+                </div>
+            </div>
+
+            <button onClick={() => onNavigate('home')} style={{ background: 'none', border: '2px solid #667eea', color: '#667eea', padding: '10px 22px', borderRadius: '8px', cursor: 'pointer', fontWeight: '600', fontSize: '14px' }}>
+                ← Back to Home
+            </button>
+        </main>
+    );
+}
+
 
 const navBtnStyle = {
     background: 'rgba(255,255,255,0.2)', border: 'none', color: 'white',
