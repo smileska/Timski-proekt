@@ -489,14 +489,15 @@ function RecommendationsSection({ recommendations, loading, done, workout, onRef
 }
 
 // ── RESTAURANT CARD ───────────────────────────────────────────────────────────
-function RealRestaurantCard({ restaurant, userAllergens, tempRestrictions }) {
+function RealRestaurantCard({ restaurant, userAllergens, tempRestrictions, isFavourite, onToggleFavourite }) {
     const [expanded, setExpanded] = useState(false);
     const visibleItems = restaurant.menu.filter(item => !itemIsBlocked(item, userAllergens, tempRestrictions));
     const blockedCount = restaurant.menu.length - visibleItems.length;
     const displayItems = expanded ? visibleItems : visibleItems.slice(0, 4);
+    const restId = restaurant.id || restaurant.name;
 
     return (
-        <div style={{ background: 'white', borderRadius: '12px', padding: '16px', boxShadow: '0 2px 8px rgba(0,0,0,0.08)', transition: 'transform 0.2s, box-shadow 0.2s', cursor: 'pointer', border: '1px solid #e5e7eb' }}
+        <div style={{ background: 'white', borderRadius: '12px', padding: '16px', boxShadow: '0 2px 8px rgba(0,0,0,0.08)', transition: 'transform 0.2s, box-shadow 0.2s', cursor: 'pointer', border: isFavourite ? '2px solid #f43f5e' : '1px solid #e5e7eb' }}
             onClick={() => setExpanded(!expanded)}
             onMouseEnter={e => { e.currentTarget.style.transform = 'translateY(-3px)'; e.currentTarget.style.boxShadow = '0 8px 16px rgba(0,0,0,0.1)'; }}
             onMouseLeave={e => { e.currentTarget.style.transform = 'translateY(0)'; e.currentTarget.style.boxShadow = '0 2px 8px rgba(0,0,0,0.08)'; }}>
@@ -511,6 +512,17 @@ function RealRestaurantCard({ restaurant, userAllergens, tempRestrictions }) {
                     </p>
                 </div>
                 <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '3px' }}>
+                    <button
+                        onClick={e => { e.stopPropagation(); onToggleFavourite(restId); }}
+                        title={isFavourite ? 'Remove from favourites' : 'Add to favourites'}
+                        style={{
+                            background: isFavourite ? '#fff1f2' : '#f9fafb',
+                            border: `1.5px solid ${isFavourite ? '#f43f5e' : '#e5e7eb'}`,
+                            borderRadius: '7px', cursor: 'pointer',
+                            padding: '3px 8px', fontSize: '15px', lineHeight: 1,
+                            transition: 'all 0.15s'
+                        }}
+                    >{isFavourite ? '❤️' : '🤍'}</button>
                     <span style={{ background: '#10b981', color: 'white', padding: '2px 7px', borderRadius: '5px', fontSize: '10px', fontWeight: 'bold' }}>LIVE</span>
                     {restaurant.distanceKm !== undefined && (
                         <span style={{ background: '#f0fdf4', color: '#2a9d5c', padding: '2px 7px', borderRadius: '5px', fontSize: '10px', fontWeight: '600' }}>
@@ -586,7 +598,7 @@ function NearbySection({ nearby, loading }) {
 }
 
 // ── RESTAURANT LIST ───────────────────────────────────────────────────────────
-function RestaurantList({ restaurants, loading, userAllergens, tempRestrictions, onOpenSettings }) {
+function RestaurantList({ restaurants, loading, userAllergens, tempRestrictions, onOpenSettings, favourites = [], onToggleFavourite }) {
     if (loading) return (
         <div style={{ textAlign: 'center', padding: '40px' }}>
             <div style={{ fontSize: '40px', marginBottom: '12px' }}>🍽️</div>
@@ -602,6 +614,22 @@ function RestaurantList({ restaurants, loading, userAllergens, tempRestrictions,
     );
 
     const allRestrictions = [...userAllergens, ...tempRestrictions];
+    const favouriteRestaurants = restaurants.filter(r => favourites.includes(r.id || r.name));
+    const otherRestaurants = restaurants.filter(r => !favourites.includes(r.id || r.name));
+
+    const renderCard = (r, idx) => {
+        if (!r.menu) return (
+            <div key={idx} style={{ background: 'white', borderRadius: '12px', padding: '16px', boxShadow: '0 2px 8px rgba(0,0,0,0.07)', border: '1px solid #d1fae5' }}>
+                <h3 style={{ margin: '0 0 5px', color: '#1a3d2b' }}>{r.name}</h3>
+                <p style={{ margin: '0 0 4px', color: '#6b7280', fontSize: '13px' }}>{r.address}</p>
+                <p style={{ margin: '0 0 4px', fontSize: '13px', fontWeight: 'bold', color: '#2a9d5c' }}>⭐ {r.rating}</p>
+                <p style={{ margin: 0, color: r.openNow ? '#10b981' : '#ef4444', fontSize: '12px' }}>{r.openNow ? '✓ Open Now' : '✗ Closed'}</p>
+            </div>
+        );
+        const restId = r.id || r.name;
+        return <RealRestaurantCard key={r.id || idx} restaurant={r} userAllergens={userAllergens} tempRestrictions={tempRestrictions} isFavourite={favourites.includes(restId)} onToggleFavourite={onToggleFavourite} />;
+    };
+
     return (
         <div>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px', flexWrap: 'wrap', gap: '10px' }}>
@@ -618,25 +646,29 @@ function RestaurantList({ restaurants, loading, userAllergens, tempRestrictions,
                     <span style={{ background: '#10b981', color: 'white', padding: '4px 10px', borderRadius: '10px', fontSize: '11px', fontWeight: 'bold' }}>✓ LIVE FROM KORPA.MK</span>
                 </div>
             </div>
+
+            {favouriteRestaurants.length > 0 && (
+                <div style={{ marginBottom: '24px' }}>
+                    <h3 style={{ margin: '0 0 12px', color: '#9f1239', fontSize: '15px', fontWeight: '700', display: 'flex', alignItems: 'center', gap: '7px' }}>
+                        ❤️ Your Favourites
+                        <span style={{ background: '#fff1f2', color: '#9f1239', padding: '2px 9px', borderRadius: '10px', fontSize: '12px', fontWeight: '600' }}>{favouriteRestaurants.length}</span>
+                    </h3>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: '16px' }}>
+                        {favouriteRestaurants.map((r, idx) => renderCard(r, idx))}
+                    </div>
+                    {otherRestaurants.length > 0 && <hr style={{ border: 'none', borderTop: '1px solid #e5e7eb', margin: '20px 0' }} />}
+                </div>
+            )}
+
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: '16px' }}>
-                {restaurants.map((r, idx) => {
-                    if (!r.menu) return (
-                        <div key={idx} style={{ background: 'white', borderRadius: '12px', padding: '16px', boxShadow: '0 2px 8px rgba(0,0,0,0.07)', border: '1px solid #d1fae5' }}>
-                            <h3 style={{ margin: '0 0 5px', color: '#1a3d2b' }}>{r.name}</h3>
-                            <p style={{ margin: '0 0 4px', color: '#6b7280', fontSize: '13px' }}>{r.address}</p>
-                            <p style={{ margin: '0 0 4px', fontSize: '13px', fontWeight: 'bold', color: '#2a9d5c' }}>⭐ {r.rating}</p>
-                            <p style={{ margin: 0, color: r.openNow ? '#10b981' : '#ef4444', fontSize: '12px' }}>{r.openNow ? '✓ Open Now' : '✗ Closed'}</p>
-                        </div>
-                    );
-                    return <RealRestaurantCard key={r.id || idx} restaurant={r} userAllergens={userAllergens} tempRestrictions={tempRestrictions} />;
-                })}
+                {otherRestaurants.map((r, idx) => renderCard(r, idx))}
             </div>
         </div>
     );
 }
 
 // ── DASHBOARD PAGE ────────────────────────────────────────────────────────────
-function DashboardPage({ workout, isRealData, recommendations, restaurants, nearbyRestaurants, userAllergens, tempRestrictions, recsLoading, restaurantsLoading, nearbyLoading, onGetRecommendations, onNavigate }) {
+function DashboardPage({ workout, isRealData, recommendations, restaurants, nearbyRestaurants, userAllergens, tempRestrictions, recsLoading, restaurantsLoading, nearbyLoading, onGetRecommendations, onNavigate, favourites = [], onToggleFavourite }) {
     const totalMenuItems = restaurants.reduce((sum, r) => sum + (r.menu ? r.menu.length : 0), 0);
     const allRestrictions = [...userAllergens, ...tempRestrictions];
     const hour = new Date().getHours();
@@ -647,6 +679,7 @@ function DashboardPage({ workout, isRealData, recommendations, restaurants, near
         { icon: '⚡', label: 'Calories Burned', value: `${workout.calories}`, sub: isRealData ? 'From Strava' : 'Demo data', color: '#d97706', bg: '#fef3c7' },
         { icon: '🍽️', label: 'Restaurants', value: restaurantsLoading ? '…' : `${restaurants.length}`, sub: `${totalMenuItems} menu items`, color: '#2a9d5c', bg: '#f0fdf4' },
         { icon: '📍', label: 'Nearby Places', value: nearbyLoading ? '…' : `${nearbyRestaurants.length}`, sub: 'Within 1km radius', color: '#0891b2', bg: '#e0f2fe' },
+        { icon: '❤️', label: 'Favourites', value: `${favourites.length}`, sub: favourites.length > 0 ? 'Saved restaurants' : 'None saved yet', color: '#f43f5e', bg: '#fff1f2' },
         { icon: '🤖', label: 'AI Suggestions', value: recsLoading ? '…' : `${recommendations.length}`, sub: recommendations.length > 0 ? 'Ready to view' : 'Not generated yet', color: '#dc2626', bg: '#fee2e2' },
         { icon: '🥗', label: 'Restrictions', value: `${allRestrictions.length}`, sub: allRestrictions.length > 0 ? allRestrictions.slice(0, 2).join(', ') + (allRestrictions.length > 2 ? '…' : '') : 'No restrictions', color: '#0ea59a', bg: '#ccfbf1' },
     ];
@@ -876,6 +909,7 @@ function Dashboard() {
     const [userLocation, setUserLocation] = useState(null);
     const [nearbyRestaurants, setNearbyRestaurants] = useState([]);
     const [nearbyLoading, setNearbyLoading] = useState(false);
+    const [favourites, setFavourites] = useState([]);
 
     useEffect(() => {
         const params = new URLSearchParams(window.location.search);
@@ -885,6 +919,8 @@ function Dashboard() {
         if (saved) setUserAllergens(JSON.parse(saved));
         const savedTemp = sessionStorage.getItem('instameal_temp');
         if (savedTemp) setTempRestrictions(JSON.parse(savedTemp));
+        const savedFavs = localStorage.getItem('instameal_favourites');
+        if (savedFavs) setFavourites(JSON.parse(savedFavs));
         autoLoad();
     }, []);
 
@@ -1050,6 +1086,13 @@ function Dashboard() {
 
     function saveAllergens(a) { setUserAllergens(a); localStorage.setItem('instameal_allergens', JSON.stringify(a)); }
     function saveTemp(t) { setTempRestrictions(t); sessionStorage.setItem('instameal_temp', JSON.stringify(t)); }
+    function toggleFavourite(restaurantId) {
+        setFavourites(prev => {
+            const next = prev.includes(restaurantId) ? prev.filter(id => id !== restaurantId) : [...prev, restaurantId];
+            localStorage.setItem('instameal_favourites', JSON.stringify(next));
+            return next;
+        });
+    }
 
     async function getRecommendations() {
         if (!restaurants.length) { alert('Load restaurants first!'); return; }
@@ -1075,6 +1118,7 @@ function Dashboard() {
                     tempRestrictions={tempRestrictions} recsLoading={recsLoading}
                     restaurantsLoading={restaurantsLoading} nearbyLoading={nearbyLoading}
                     onGetRecommendations={getRecommendations} onNavigate={setCurrentPage}
+                    favourites={favourites} onToggleFavourite={toggleFavourite}
                 />
             )}
 
@@ -1142,7 +1186,7 @@ function Dashboard() {
 
                     <RecommendationsSection recommendations={recommendations} loading={recsLoading} done={recsDone} workout={workout} onRefresh={getRecommendations} />
                     <NearbySection nearby={nearbyRestaurants} loading={nearbyLoading} />
-                    <RestaurantList restaurants={restaurants} loading={restaurantsLoading} userAllergens={userAllergens} tempRestrictions={tempRestrictions} onOpenSettings={() => setAllergenModalOpen(true)} />
+                    <RestaurantList restaurants={restaurants} loading={restaurantsLoading} userAllergens={userAllergens} tempRestrictions={tempRestrictions} onOpenSettings={() => setAllergenModalOpen(true)} favourites={favourites} onToggleFavourite={toggleFavourite} />
                 </main>
             )}
         </div>
