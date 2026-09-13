@@ -104,7 +104,7 @@ function sortByDistance(restaurants, userLat, userLon) {
     }).sort((a, b) => a.distanceKm - b.distanceKm);
 }
 
-async function getMealRecommendations(workout, restaurants, userAllergens, tempRestrictions) {
+async function getMealRecommendations(workout, restaurants, userAllergens, tempRestrictions, healthReport, dietaryNotes, orderedMeals) {
     const allMeals = [];
     const hasDistance = restaurants[0]?.distanceKm !== undefined;
     const sortedRestaurants = hasDistance
@@ -139,13 +139,27 @@ async function getMealRecommendations(workout, restaurants, userAllergens, tempR
     const distanceNote = hasDistance
         ? `IMPORTANT: The meals are listed from the NEAREST restaurant first. You MUST prioritize meals from restaurants that are closest to the user. Only suggest a farther restaurant if it has a significantly better nutritional fit.`
         : '';
+    const notesText = dietaryNotes
+        ? `STRICT USER REQUIREMENTS (must not be violated — do NOT recommend any meal that breaks these):\n${dietaryNotes}`
+        : '';
+    const orderedText = orderedMeals && orderedMeals.length > 0
+        ? `RECENTLY ORDERED — do NOT recommend these again (user had them in the past 7 days, avoid repeating):\n${orderedMeals.map(m => {
+            const daysAgo = Math.floor((Date.now() - m.orderedAt) / (1000 * 60 * 60 * 24));
+            return `- ${m.name} (ordered ${daysAgo === 0 ? 'today' : daysAgo + ' day(s) ago'})`;
+        }).join('\n')}`
+        : '';
+    const healthContext = healthReport
+        ? `\nHealth Report (blood work / urinalysis):\n${healthReport.slice(0, 1500)}\nUse these health metrics to further personalize the food recommendation (e.g. avoid foods that worsen flagged values, prefer foods that support deficiencies).`
+        : '';
     const userContext = `
 Time: ${hour}:00 (${mealTiming})
 Workout: ${workout.type}, ${workout.distance}, ${workout.duration}, intensity: ${workout.intensity}, calories burned: ${workout.calories}
 Goal: improve endurance, maintain weight
 Meal timing: ${mealTiming} after a ${workout.intensity.toLowerCase()} ${workout.type}
 ${allergenText}
-${distanceNote}
+${notesText}
+${orderedText}
+${distanceNote}${healthContext}
 `;
 
     try {
@@ -263,13 +277,15 @@ function Header({ athleteName, onSettingsClick, onNavigate }) {
 }
 
 // ── DIETARY MODAL ────────────────────────────────────────────────────────────
-function DietaryModal({ isOpen, onClose, selectedAllergens, tempRestrictions, onSave, onSaveTemp }) {
+function DietaryModal({ isOpen, onClose, selectedAllergens, tempRestrictions, dietaryNotes, onSave, onSaveTemp, onSaveDietaryNotes }) {
     const [localAllergens, setLocalAllergens] = useState(selectedAllergens);
     const [localTemp, setLocalTemp] = useState(tempRestrictions);
+    const [localNotes, setLocalNotes] = useState(dietaryNotes);
     const [tab, setTab] = useState('permanent');
 
     useEffect(() => setLocalAllergens(selectedAllergens), [selectedAllergens]);
     useEffect(() => setLocalTemp(tempRestrictions), [tempRestrictions]);
+    useEffect(() => setLocalNotes(dietaryNotes), [dietaryNotes]);
 
     if (!isOpen) return null;
 
@@ -321,9 +337,33 @@ function DietaryModal({ isOpen, onClose, selectedAllergens, tempRestrictions, on
                     })}
                 </div>
 
+                <div style={{ borderTop: '1px solid #e5e7eb', paddingTop: '18px', marginBottom: '20px' }}>
+                    <label style={{ display: 'block', fontWeight: '700', color: '#1a3d2b', fontSize: '13px', marginBottom: '6px' }}>
+                        ✏️ Additional dietary notes
+                    </label>
+                    <p style={{ margin: '0 0 10px', color: '#6b7280', fontSize: '12px' }}>
+                        Anything the AI should know — diet style, health goals, intolerances not listed above, foods you dislike, etc.
+                    </p>
+                    <textarea
+                        value={localNotes}
+                        onChange={e => setLocalNotes(e.target.value)}
+                        placeholder="e.g. vegetarian but eat fish, low sodium due to hypertension, trying to lose weight, lactose intolerant, prefer high protein meals, no spicy food..."
+                        rows={4}
+                        style={{
+                            width: '100%', boxSizing: 'border-box', padding: '10px 12px',
+                            border: '2px solid #e5e7eb', borderRadius: '10px', fontSize: '13px',
+                            color: '#333', resize: 'vertical', fontFamily: 'inherit',
+                            outline: 'none', lineHeight: '1.5'
+                        }}
+                        onFocus={e => e.target.style.borderColor = '#2a9d5c'}
+                        onBlur={e => e.target.style.borderColor = '#e5e7eb'}
+                    />
+                    <p style={{ margin: '6px 0 0', color: '#9ca3af', fontSize: '11px', textAlign: 'right' }}>{localNotes.length}/500</p>
+                </div>
+
                 <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end' }}>
                     <button onClick={onClose} style={{ padding: '10px 20px', border: '2px solid #e5e7eb', background: 'white', borderRadius: '8px', cursor: 'pointer', fontWeight: '600', color: '#666' }}>Cancel</button>
-                    <button onClick={() => { onSave(localAllergens); onSaveTemp(localTemp); onClose(); }}
+                    <button onClick={() => { onSave(localAllergens); onSaveTemp(localTemp); onSaveDietaryNotes(localNotes.slice(0, 500)); onClose(); }}
                         style={{ padding: '10px 20px', border: 'none', background: 'linear-gradient(135deg, #2a9d5c, #0ea59a)', color: 'white', borderRadius: '8px', cursor: 'pointer', fontWeight: '600' }}>
                         Save ({localAllergens.length} permanent · {localTemp.length} today)
                     </button>
@@ -333,24 +373,31 @@ function DietaryModal({ isOpen, onClose, selectedAllergens, tempRestrictions, on
     );
 }
 
-function RestrictionsBanner({ allergens, tempRestrictions, onEdit }) {
+function RestrictionsBanner({ allergens, tempRestrictions, dietaryNotes, onEdit }) {
     const all = [...allergens, ...tempRestrictions];
-    if (all.length === 0) return null;
+    if (all.length === 0 && !dietaryNotes) return null;
     return (
         <div style={{ background: '#fff7ed', border: '2px solid #f59e0b', borderRadius: '12px', padding: '12px 16px', marginBottom: '18px' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '12px' }}>
-                <div>
+                <div style={{ flex: 1, minWidth: 0 }}>
                     <h3 style={{ margin: '0 0 7px 0', color: '#92400e', fontSize: '13px' }}>🥗 Active Food Preferences</h3>
-                    <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
-                        {allergens.map(id => {
-                            const a = ALLERGEN_OPTIONS.find(x => x.id === id);
-                            return a ? <span key={id} style={{ background: '#fee2e2', color: '#991b1b', padding: '3px 8px', borderRadius: '10px', fontSize: '12px', fontWeight: '600' }}>{a.icon} {a.name}</span> : null;
-                        })}
-                        {tempRestrictions.map(id => {
-                            const a = ALLERGEN_OPTIONS.find(x => x.id === id);
-                            return a ? <span key={`t-${id}`} style={{ background: '#fffbeb', color: '#92400e', padding: '3px 8px', borderRadius: '10px', fontSize: '12px', fontWeight: '600', border: '1px solid #f59e0b' }}>⏱️ {a.icon} {a.name}</span> : null;
-                        })}
-                    </div>
+                    {all.length > 0 && (
+                        <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginBottom: dietaryNotes ? '8px' : 0 }}>
+                            {allergens.map(id => {
+                                const a = ALLERGEN_OPTIONS.find(x => x.id === id);
+                                return a ? <span key={id} style={{ background: '#fee2e2', color: '#991b1b', padding: '3px 8px', borderRadius: '10px', fontSize: '12px', fontWeight: '600' }}>{a.icon} {a.name}</span> : null;
+                            })}
+                            {tempRestrictions.map(id => {
+                                const a = ALLERGEN_OPTIONS.find(x => x.id === id);
+                                return a ? <span key={`t-${id}`} style={{ background: '#fffbeb', color: '#92400e', padding: '3px 8px', borderRadius: '10px', fontSize: '12px', fontWeight: '600', border: '1px solid #f59e0b' }}>⏱️ {a.icon} {a.name}</span> : null;
+                            })}
+                        </div>
+                    )}
+                    {dietaryNotes && (
+                        <p style={{ margin: 0, color: '#92400e', fontSize: '12px', fontStyle: 'italic', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            ✏️ {dietaryNotes.length > 80 ? dietaryNotes.slice(0, 80) + '…' : dietaryNotes}
+                        </p>
+                    )}
                 </div>
                 <button onClick={onEdit} style={{ background: 'white', border: '2px solid #f59e0b', color: '#92400e', padding: '5px 12px', borderRadius: '6px', cursor: 'pointer', fontSize: '12px', fontWeight: '600', flexShrink: 0 }}>Edit</button>
             </div>
@@ -403,7 +450,7 @@ function WorkoutCard({ workout, isReal }) {
 }
 
 // ── AI RECOMMENDATIONS ────────────────────────────────────────────────────────
-function RecommendationsSection({ recommendations, loading, done, workout, onRefresh }) {
+function RecommendationsSection({ recommendations, loading, done, workout, onRefresh, orderedMeals, onMarkOrdered }) {
     if (loading) return (
         <div style={{
             background: 'white', borderRadius: '16px', padding: '32px',
@@ -453,7 +500,9 @@ function RecommendationsSection({ recommendations, loading, done, workout, onRef
             </div>
 
             <div style={{ display: 'grid', gap: '10px', marginTop: '14px' }}>
-                {recommendations.map((rec, idx) => (
+                {recommendations.map((rec, idx) => {
+                    const alreadyOrdered = orderedMeals?.some(m => m.name.toLowerCase() === rec.meal.toLowerCase());
+                    return (
                     <div key={idx} style={{
                         background: idx === 0 ? '#f0fdf4' : '#f9fafb',
                         border: `1.5px solid ${idx === 0 ? '#6ee7b7' : '#e5e7eb'}`,
@@ -479,10 +528,23 @@ function RecommendationsSection({ recommendations, loading, done, workout, onRef
                                     }
                                 </div>
                             )}
-                            <p style={{ margin: 0, color: '#6b7280', fontSize: '12px', lineHeight: '1.5' }}>{rec.reason}</p>
+                            <p style={{ margin: '0 0 8px', color: '#6b7280', fontSize: '12px', lineHeight: '1.5' }}>{rec.reason}</p>
+                            <button
+                                onClick={() => onMarkOrdered(rec.meal)}
+                                style={{
+                                    background: alreadyOrdered ? '#f0fdf4' : 'white',
+                                    border: `1.5px solid ${alreadyOrdered ? '#6ee7b7' : '#d1d5db'}`,
+                                    color: alreadyOrdered ? '#15803d' : '#6b7280',
+                                    padding: '3px 10px', borderRadius: '6px', cursor: 'pointer',
+                                    fontSize: '11px', fontWeight: '600'
+                                }}
+                            >
+                                {alreadyOrdered ? '✓ Ordered' : '✓ I ordered this'}
+                            </button>
                         </div>
                     </div>
-                ))}
+                    );
+                })}
             </div>
         </div>
     );
@@ -491,8 +553,9 @@ function RecommendationsSection({ recommendations, loading, done, workout, onRef
 // ── RESTAURANT CARD ───────────────────────────────────────────────────────────
 function RealRestaurantCard({ restaurant, userAllergens, tempRestrictions, isFavourite, onToggleFavourite }) {
     const [expanded, setExpanded] = useState(false);
-    const visibleItems = restaurant.menu.filter(item => !itemIsBlocked(item, userAllergens, tempRestrictions));
-    const blockedCount = restaurant.menu.length - visibleItems.length;
+    const menuItems = restaurant.menu || [];
+    const visibleItems = menuItems.filter(item => !itemIsBlocked(item, userAllergens, tempRestrictions));
+    const blockedCount = menuItems.length - visibleItems.length;
     const displayItems = expanded ? visibleItems : visibleItems.slice(0, 4);
     const restId = restaurant.id || restaurant.name;
 
@@ -534,9 +597,13 @@ function RealRestaurantCard({ restaurant, userAllergens, tempRestrictions, isFav
 
             {restaurant.banner && <div style={{ width: '100%', height: '120px', borderRadius: '8px', backgroundImage: `url(${restaurant.banner})`, backgroundSize: 'cover', backgroundPosition: 'center', marginBottom: '10px' }} />}
 
-            {visibleItems.length === 0 ? (
+            {menuItems.length === 0 ? (
+                <div style={{ padding: '12px', background: '#f3f4f6', borderRadius: '8px', textAlign: 'center', marginBottom: '10px' }}>
+                    <p style={{ margin: 0, color: '#6b7280', fontSize: '13px' }}>Menu not available — check on Korpa.mk</p>
+                </div>
+            ) : visibleItems.length === 0 ? (
                 <div style={{ padding: '12px', background: '#fee2e2', borderRadius: '8px', textAlign: 'center', marginBottom: '10px' }}>
-                    <p style={{ margin: 0, color: '#991b1b', fontSize: '13px' }}>🚫 All items blocked by your dietary restrictions</p>
+                    <p style={{ margin: 0, color: '#991b1b', fontSize: '13px' }}>🚫 All items hidden by your dietary preferences</p>
                 </div>
             ) : (
                 <div style={{ marginBottom: '10px' }}>
@@ -778,9 +845,36 @@ function DashboardPage({ workout, isRealData, recommendations, restaurants, near
 }
 
 // ── PROFILE PAGE ──────────────────────────────────────────────────────────────
-function ProfilePage({ athleteName, accessToken, userAllergens, tempRestrictions, workout, isRealData, onEditPreferences, onStravaLogin, onNavigate }) {
+function ProfilePage({ athleteName, accessToken, userAllergens, tempRestrictions, dietaryNotes, workout, isRealData, healthReport, onSaveHealthReport, onEditPreferences, onStravaLogin, onNavigate }) {
     const allRestrictions = [...userAllergens, ...tempRestrictions];
     const joinedDate = new Date().toLocaleDateString('en-GB', { year: 'numeric', month: 'long', day: 'numeric' });
+    const [uploadStatus, setUploadStatus] = useState(null);
+    const [uploading, setUploading] = useState(false);
+
+    async function handleHealthReportUpload(e) {
+        const file = e.target.files[0];
+        if (!file) return;
+        if (file.type !== 'application/pdf') { setUploadStatus({ type: 'error', msg: 'Please select a PDF file.' }); return; }
+        setUploading(true);
+        setUploadStatus(null);
+        try {
+            const formData = new FormData();
+            formData.append('pdf', file);
+            const res = await fetch(`${BACKEND_URL}/api/upload-health-report`, { method: 'POST', body: formData });
+            const data = await res.json();
+            if (data.success) {
+                onSaveHealthReport({ text: data.text, filename: file.name, pages: data.pages, uploadedAt: new Date().toISOString() });
+                setUploadStatus({ type: 'success', msg: `Parsed ${data.pages} page(s) from "${file.name}".` });
+            } else {
+                setUploadStatus({ type: 'error', msg: data.error || 'Upload failed.' });
+            }
+        } catch {
+            setUploadStatus({ type: 'error', msg: 'Could not reach the server.' });
+        } finally {
+            setUploading(false);
+            e.target.value = '';
+        }
+    }
 
     return (
         <main style={{ maxWidth: '860px', margin: '0 auto', padding: '24px 20px' }}>
@@ -864,11 +958,53 @@ function ProfilePage({ athleteName, accessToken, userAllergens, tempRestrictions
                     ) : <p style={{ margin: 0, color: '#aaa', fontSize: '12px', fontStyle: 'italic' }}>No temporary restrictions for today</p>}
                 </div>
 
-                {allRestrictions.length === 0 && (
+                {dietaryNotes && (
+                    <div style={{ marginTop: '12px' }}>
+                        <p style={{ margin: '0 0 5px', fontWeight: '700', color: '#6b7280', fontSize: '11px', textTransform: 'uppercase', letterSpacing: '0.4px' }}>✏️ Additional Notes</p>
+                        <p style={{ margin: 0, color: '#374151', fontSize: '12px', background: '#f9fafb', borderRadius: '8px', padding: '8px 10px', border: '1px solid #e5e7eb', lineHeight: '1.5' }}>{dietaryNotes}</p>
+                    </div>
+                )}
+
+                {allRestrictions.length === 0 && !dietaryNotes && (
                     <div style={{ background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: '10px', padding: '10px', marginTop: '10px' }}>
                         <p style={{ margin: 0, color: '#166534', fontSize: '12px' }}>✓ No dietary restrictions — you'll see all available menu items</p>
                     </div>
                 )}
+            </div>
+
+            <div style={{ background: 'white', borderRadius: '14px', padding: '18px 20px', boxShadow: '0 2px 8px rgba(0,0,0,0.07)', marginBottom: '14px', border: '1px solid #d1fae5' }}>
+                <h3 style={{ margin: '0 0 6px', color: '#1a3d2b', fontSize: '14px', fontWeight: '700' }}>🩸 Health Reports</h3>
+                <p style={{ margin: '0 0 14px', color: '#6b7280', fontSize: '12px' }}>Upload your blood work or urinalysis PDF. The AI will factor in your health metrics when recommending meals.</p>
+
+                {healthReport ? (
+                    <div style={{ background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: '10px', padding: '11px', marginBottom: '12px' }}>
+                        <p style={{ margin: '0 0 2px', color: '#166534', fontWeight: '600', fontSize: '13px' }}>✓ Report active: {healthReport.filename}</p>
+                        <p style={{ margin: '0 0 6px', color: '#15803d', fontSize: '12px' }}>{healthReport.pages} page(s) · uploaded {new Date(healthReport.uploadedAt).toLocaleDateString()}</p>
+                        <p style={{ margin: 0, color: '#15803d', fontSize: '12px', fontStyle: 'italic' }}>Your health data is included in AI meal recommendations.</p>
+                    </div>
+                ) : (
+                    <div style={{ background: '#f9fafb', border: '1px solid #e5e7eb', borderRadius: '10px', padding: '11px', marginBottom: '12px' }}>
+                        <p style={{ margin: 0, color: '#9ca3af', fontSize: '12px', fontStyle: 'italic' }}>No health report uploaded yet.</p>
+                    </div>
+                )}
+
+                {uploadStatus && (
+                    <div style={{ background: uploadStatus.type === 'success' ? '#f0fdf4' : '#fef2f2', border: `1px solid ${uploadStatus.type === 'success' ? '#bbf7d0' : '#fecaca'}`, borderRadius: '8px', padding: '8px 12px', marginBottom: '12px' }}>
+                        <p style={{ margin: 0, color: uploadStatus.type === 'success' ? '#166534' : '#991b1b', fontSize: '12px' }}>{uploadStatus.msg}</p>
+                    </div>
+                )}
+
+                <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
+                    <label style={{ background: 'linear-gradient(135deg, #2a9d5c, #0ea59a)', color: 'white', padding: '7px 14px', borderRadius: '8px', cursor: uploading ? 'not-allowed' : 'pointer', fontWeight: '600', fontSize: '12px', opacity: uploading ? 0.7 : 1 }}>
+                        {uploading ? 'Uploading...' : '📄 Upload PDF'}
+                        <input type="file" accept="application/pdf" onChange={handleHealthReportUpload} disabled={uploading} style={{ display: 'none' }} />
+                    </label>
+                    {healthReport && (
+                        <button onClick={() => { onSaveHealthReport(null); setUploadStatus(null); }} style={{ background: 'none', border: '1.5px solid #fca5a5', color: '#991b1b', padding: '6px 12px', borderRadius: '8px', cursor: 'pointer', fontWeight: '600', fontSize: '12px' }}>
+                            🗑️ Clear Report
+                        </button>
+                    )}
+                </div>
             </div>
 
             <div style={{ background: 'white', borderRadius: '14px', padding: '18px 20px', boxShadow: '0 2px 8px rgba(0,0,0,0.07)', marginBottom: '14px', border: '1px solid #d1fae5' }}>
@@ -910,6 +1046,9 @@ function Dashboard() {
     const [nearbyRestaurants, setNearbyRestaurants] = useState([]);
     const [nearbyLoading, setNearbyLoading] = useState(false);
     const [favourites, setFavourites] = useState([]);
+    const [healthReport, setHealthReportState] = useState(null);
+    const [dietaryNotes, setDietaryNotesState] = useState('');
+    const [orderedMeals, setOrderedMeals] = useState([]);
 
     useEffect(() => {
         const params = new URLSearchParams(window.location.search);
@@ -921,6 +1060,17 @@ function Dashboard() {
         if (savedTemp) setTempRestrictions(JSON.parse(savedTemp));
         const savedFavs = localStorage.getItem('instameal_favourites');
         if (savedFavs) setFavourites(JSON.parse(savedFavs));
+        const savedReport = localStorage.getItem('instameal_health_report');
+        if (savedReport) setHealthReportState(JSON.parse(savedReport));
+        const savedNotes = localStorage.getItem('instameal_dietary_notes');
+        if (savedNotes) setDietaryNotesState(savedNotes);
+        const savedOrdered = localStorage.getItem('instameal_ordered_meals');
+        if (savedOrdered) {
+            const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
+            const fresh = JSON.parse(savedOrdered).filter(m => m.orderedAt > cutoff);
+            setOrderedMeals(fresh);
+            localStorage.setItem('instameal_ordered_meals', JSON.stringify(fresh));
+        }
         autoLoad();
     }, []);
 
@@ -1086,6 +1236,24 @@ function Dashboard() {
 
     function saveAllergens(a) { setUserAllergens(a); localStorage.setItem('instameal_allergens', JSON.stringify(a)); }
     function saveTemp(t) { setTempRestrictions(t); sessionStorage.setItem('instameal_temp', JSON.stringify(t)); }
+    function saveHealthReport(report) {
+        setHealthReportState(report);
+        if (report) localStorage.setItem('instameal_health_report', JSON.stringify(report));
+        else localStorage.removeItem('instameal_health_report');
+    }
+    function markAsOrdered(mealName) {
+        setOrderedMeals(prev => {
+            const filtered = prev.filter(m => m.name.toLowerCase() !== mealName.toLowerCase());
+            const next = [...filtered, { name: mealName, orderedAt: Date.now() }];
+            localStorage.setItem('instameal_ordered_meals', JSON.stringify(next));
+            return next;
+        });
+    }
+    function saveDietaryNotes(notes) {
+        setDietaryNotesState(notes);
+        if (notes) localStorage.setItem('instameal_dietary_notes', notes);
+        else localStorage.removeItem('instameal_dietary_notes');
+    }
     function toggleFavourite(restaurantId) {
         setFavourites(prev => {
             const next = prev.includes(restaurantId) ? prev.filter(id => id !== restaurantId) : [...prev, restaurantId];
@@ -1098,7 +1266,7 @@ function Dashboard() {
         if (!restaurants.length) { alert('Load restaurants first!'); return; }
         setRecsLoading(true); setRecsDone(false);
         try {
-            const recs = await getMealRecommendations(workout, restaurants, userAllergens, tempRestrictions);
+            const recs = await getMealRecommendations(workout, restaurants, userAllergens, tempRestrictions, healthReport?.text, dietaryNotes, orderedMeals);
             setRecommendations(recs); setRecsDone(true);
         } catch (e) { } finally { setRecsLoading(false); }
     }
@@ -1108,7 +1276,8 @@ function Dashboard() {
             <Header athleteName={athleteName} onSettingsClick={() => setAllergenModalOpen(true)} onNavigate={setCurrentPage} />
             <DietaryModal isOpen={allergenModalOpen} onClose={() => setAllergenModalOpen(false)}
                 selectedAllergens={userAllergens} tempRestrictions={tempRestrictions}
-                onSave={saveAllergens} onSaveTemp={saveTemp} />
+                dietaryNotes={dietaryNotes}
+                onSave={saveAllergens} onSaveTemp={saveTemp} onSaveDietaryNotes={saveDietaryNotes} />
 
             {currentPage === 'dashboard' && (
                 <DashboardPage
@@ -1126,7 +1295,9 @@ function Dashboard() {
                 <ProfilePage
                     athleteName={athleteName} accessToken={accessToken}
                     userAllergens={userAllergens} tempRestrictions={tempRestrictions}
+                    dietaryNotes={dietaryNotes}
                     workout={workout} isRealData={isRealData}
+                    healthReport={healthReport} onSaveHealthReport={saveHealthReport}
                     onEditPreferences={() => setAllergenModalOpen(true)}
                     onStravaLogin={handleStravaLogin} onNavigate={setCurrentPage}
                 />
@@ -1152,7 +1323,7 @@ function Dashboard() {
                     {loading && <div style={{ textAlign: 'center', padding: '24px', color: '#6b7280' }}>Loading workout data...</div>}
                     {!loading && <WorkoutCard workout={workout} isReal={isRealData} />}
 
-                    <RestrictionsBanner allergens={userAllergens} tempRestrictions={tempRestrictions} onEdit={() => setAllergenModalOpen(true)} />
+                    <RestrictionsBanner allergens={userAllergens} tempRestrictions={tempRestrictions} dietaryNotes={dietaryNotes} onEdit={() => setAllergenModalOpen(true)} />
 
                     <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '20px', alignItems: 'center' }}>
                         <button onClick={loadKorpa} style={{
@@ -1184,7 +1355,7 @@ function Dashboard() {
                         </button>
                     </div>
 
-                    <RecommendationsSection recommendations={recommendations} loading={recsLoading} done={recsDone} workout={workout} onRefresh={getRecommendations} />
+                    <RecommendationsSection recommendations={recommendations} loading={recsLoading} done={recsDone} workout={workout} onRefresh={getRecommendations} orderedMeals={orderedMeals} onMarkOrdered={markAsOrdered} />
                     <NearbySection nearby={nearbyRestaurants} loading={nearbyLoading} />
                     <RestaurantList restaurants={restaurants} loading={restaurantsLoading} userAllergens={userAllergens} tempRestrictions={tempRestrictions} onOpenSettings={() => setAllergenModalOpen(true)} favourites={favourites} onToggleFavourite={toggleFavourite} />
                 </main>

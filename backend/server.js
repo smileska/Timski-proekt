@@ -1,7 +1,11 @@
 const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
+const multer = require('multer');
+const pdfParse = require('pdf-parse');
 require('dotenv').config();
+
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
 const app = express();
 const PORT = 3001;
@@ -412,11 +416,14 @@ app.post('/api/recommend-meals', async (req, res) => {
     ).join('\n');
 
     const prompt = `
-You are a smart food recommendation assistant.
+You are a strict food recommendation assistant. You MUST respect all dietary requirements without exception.
+
 ${userContext}
 
 Available meals:
 ${mealList}
+
+IMPORTANT: Before recommending any meal, verify it does not violate any dietary requirement listed above. If a meal contains an ingredient that conflicts with the user's requirements (e.g. meat for a vegetarian, gluten for a gluten-free diet), skip it entirely and pick the next best option.
 
 Return ONLY valid JSON in this format:
 {
@@ -452,6 +459,20 @@ Return top 3 meals only.
     }
 });
 console.log('   ✓ POST /api/recommend-meals');
+
+app.post('/api/upload-health-report', upload.single('pdf'), async (req, res) => {
+    if (!req.file) return res.status(400).json({ success: false, error: 'No PDF file uploaded' });
+    if (req.file.mimetype !== 'application/pdf') return res.status(400).json({ success: false, error: 'File must be a PDF' });
+    try {
+        const data = await pdfParse(req.file.buffer);
+        const text = data.text.replace(/\s+/g, ' ').trim();
+        res.json({ success: true, text, pages: data.numpages });
+    } catch (err) {
+        console.error('PDF parse error:', err.message);
+        res.status(500).json({ success: false, error: 'Failed to parse PDF' });
+    }
+});
+console.log('   ✓ POST /api/upload-health-report');
 
 console.log('\nAll routes registered!\n');
 
