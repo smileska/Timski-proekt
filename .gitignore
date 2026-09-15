@@ -47,3 +47,11 @@ backend/korpa-data.json
 korpa-data.json
 
 backend/test-*.js
+
+# SQLite database
+backend/fitfuel.db
+backend/fitfuel.db-shm
+backend/fitfuel.db-wal
+
+# Uploaded user files
+backend/uploads/
