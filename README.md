@@ -1,70 +1,176 @@
-# Getting Started with Create React App
+# FitFuel
 
-This project was bootstrapped with [Create React App](https://github.com/facebook/create-react-app).
+FitFuel is a web app that suggests **what to eat, from restaurants that actually deliver to you, based on your body, your goals and your training schedule**.
 
-## Available Scripts
+Most nutrition apps assume you cook every meal yourself. FitFuel starts from what you can order right now (Wolt and Korpa.mk in North Macedonia) and picks meals that fit your calorie and macro targets, respect your allergies, and suit when you train (for example, carbs before a workout and protein after one).
 
-In the project directory, you can run:
+## What it does
 
-### `npm start`
+- **Profile and goals:** you enter weight, height, age and activity level. The app calculates BMI and daily calorie and macro targets for your goal (lose fat, build muscle, gain weight, maintain, or improve endurance).
+- **Food preferences and allergens:** you mark dietary restrictions and allergens, each with a severity. Menu items are classified against them, so unsafe dishes are filtered out or flagged.
+- **Workouts:** you log training manually or **import it from Google Calendar**. Calories burned are estimated and added to your daily budget.
+- **Location-aware restaurants:** live venues come from Wolt's public API, plus a scraped Korpa.mk list for the Skopje area. Only places that deliver near you are shown.
+- **AI meal recommendations:** an LLM (local Ollama by default, or Anthropic Claude) picks dishes from nearby menus to fit your remaining targets and meal timing. It also explains *why* each dish was chosen (personalization transparency).
+- **Blood and urine test analysis:** you upload a lab-results PDF. The app extracts the values, the AI summarizes them, and the findings feed into recommendations.
+- **History:** you can view past meals and workouts.
 
-Runs the app in the development mode.\
-Open [http://localhost:3000](http://localhost:3000) to view it in your browser.
+## Tech stack
 
-The page will reload when you make changes.\
-You may also see any lint errors in the console.
+| Part      | Tech                                                                  |
+|-----------|-----------------------------------------------------------------------|
+| Frontend  | React 19 (Create React App), React Router                             |
+| Backend   | Node.js + Express 5                                                   |
+| Database  | SQLite via Node's built-in `node:sqlite` (file `backend/fitfuel.db`, created automatically) |
+| Auth      | Email/password (bcrypt + JWT) and Sign in with Google (OAuth 2.0)     |
+| AI        | Ollama (local, free) or Anthropic API                                 |
+| Data      | Wolt public API, Korpa.mk scraper (Puppeteer), Google Calendar API    |
 
-### `npm test`
+```
+Timski-proekt/
+├── src/              React frontend (pages, components, API client)
+├── public/
+└── backend/
+    ├── server.js     Express entry point (port 3001)
+    ├── db.js         SQLite schema / setup
+    ├── routes/       auth, profile, workouts, recommend, bloodwork, korpa, geo
+    ├── lib/          AI provider, nutrition math, allergens, Wolt, restaurants
+    ├── korpaScraper.js
+    └── .env.example  Template for the backend .env (copy this)
+```
 
-Launches the test runner in the interactive watch mode.\
-See the section about [running tests](https://facebook.github.io/create-react-app/docs/running-tests) for more information.
+## Running locally
 
-### `npm run build`
+### Prerequisites
 
-Builds the app for production to the `build` folder.\
-It correctly bundles React in production mode and optimizes the build for the best performance.
+- **Node.js 22.5 or newer.** The backend uses the built-in `node:sqlite` module.
+- **npm**
+- **Ollama** (recommended, free) for the AI features: install it from <https://ollama.com>, then run:
+  ```bash
+  ollama pull llama3.1:8b
+  ```
+  You can use an Anthropic API key instead (see below).
 
-The build is minified and the filenames include the hashes.\
-Your app is ready to be deployed!
+### 1. Clone and install
 
-See the section about [deployment](https://facebook.github.io/create-react-app/docs/deployment) for more information.
+```bash
+git clone https://github.com/smileska/Timski-proekt.git
+cd Timski-proekt
 
-### `npm run eject`
+# frontend dependencies
+npm install
 
-**Note: this is a one-way operation. Once you `eject`, you can't go back!**
+# backend dependencies
+cd backend
+npm install
+```
 
-If you aren't satisfied with the build tool and configuration choices, you can `eject` at any time. This command will remove the single build dependency from your project.
+### 2. Create the backend `.env`
 
-Instead, it will copy all the configuration files and the transitive dependencies (webpack, Babel, ESLint, etc) right into your project so you have full control over them. All of the commands except `eject` will still work, but they will point to the copied scripts so you can tweak them. At this point you're on your own.
+The `.env` file is **not committed to git** because it holds secrets, so each developer creates their own from the template:
 
-You don't have to ever use `eject`. The curated feature set is suitable for small and middle deployments, and you shouldn't feel obligated to use this feature. However we understand that this tool wouldn't be useful if you couldn't customize it when you are ready for it.
+```bash
+# inside backend/
+cp .env.example .env        # Windows PowerShell: Copy-Item .env.example .env
+```
 
-## Learn More
+Then edit `backend/.env`:
 
-You can learn more in the [Create React App documentation](https://facebook.github.io/create-react-app/docs/getting-started).
+| Variable | Required? | What it is |
+|---|---|---|
+| `JWT_SECRET` | **Yes** | Any long random string, used to sign login tokens. |
+| `AI_PROVIDER` | Yes | `ollama` (default) or `anthropic`. |
+| `OLLAMA_URL`, `OLLAMA_MODEL` | If using Ollama | Defaults: `http://localhost:11434`, `llama3.1:8b`. |
+| `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL` | If using Anthropic | Get a key at <https://console.anthropic.com/>. |
+| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | For Google sign-in and Calendar | See [Google Calendar setup](#google-sign-in--google-calendar-setup). |
+| `GOOGLE_REDIRECT_URI` | For Google | `http://localhost:3000/oauth/google` |
+| `GOOGLE_PLACES_API_KEY` | Optional | Only used to geocode restaurants missing from the built-in coordinate list. |
+| `PORT` | Optional | Backend port, default `3001`. |
+| `FRONTEND_ORIGIN` | Optional | Default `http://localhost:3000` (used for CORS). |
 
-To learn React, check out the [React documentation](https://reactjs.org/).
+The app runs without the Google variables. Email/password login still works, and only the "Continue with Google" button and Calendar import are disabled.
 
-### Code Splitting
+### 3. Start the backend
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/code-splitting](https://facebook.github.io/create-react-app/docs/code-splitting)
+```bash
+cd backend
+npm run dev        # auto-restarts on changes (or: npm start)
+```
 
-### Analyzing the Bundle Size
+The backend runs on <http://localhost:3001>. Open <http://localhost:3001/api/health> to check it; it should return `{"status":"ok"}`. The SQLite database is created on first start.
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size](https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size)
+### 4. Start the frontend
 
-### Making a Progressive Web App
+In a second terminal, from the project root:
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app](https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app)
+```bash
+npm start
+```
 
-### Advanced Configuration
+The app opens at <http://localhost:3000>. The frontend calls the backend at `http://localhost:3001` by default. To point it somewhere else, set `REACT_APP_API_URL`.
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/advanced-configuration](https://facebook.github.io/create-react-app/docs/advanced-configuration)
+### 5. (Optional) Load Korpa.mk restaurants
 
-### Deployment
+Wolt restaurants load live and need no setup. The Korpa.mk list is stored in `backend/korpa-data.json`, which is also git-ignored. To generate it:
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/deployment](https://facebook.github.io/create-react-app/docs/deployment)
+```bash
+cd backend
+node korpaScraper.js
+```
 
-### `npm run build` fails to minify
+This uses Puppeteer (headless Chrome) and takes a few minutes. Without this file the app works normally but shows only Wolt restaurants.
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify](https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify)
+## Google Sign-in & Google Calendar setup
+
+FitFuel uses **one Google OAuth consent** for both signing in and reading your calendar. When a user clicks **Continue with Google**, they grant:
+
+- `openid`, `email`, `profile` for login
+- `https://www.googleapis.com/auth/calendar.events.readonly` for reading calendar events (read-only, the app never writes to your calendar)
+
+The backend stores the access and refresh tokens in the `connections` table and refreshes them automatically. On the **Workouts** page, the **Google Calendar** button reads events from your primary calendar for the **next 48 hours**. It imports those that look like training, meaning the title or description contains words such as *gym, run, workout, yoga, bike, swim, HIIT* (plus some Macedonian ones such as *тренинг* and *фитнес*). Imported sessions count toward the day's calorie budget and meal timing.
+
+Because the `.env` is not in the repo, each developer needs their own Google credentials (or the team shares one set privately, never through git):
+
+1. Go to <https://console.cloud.google.com/> and create (or select) a project.
+2. **Enable the Calendar API:** go to *APIs & Services → Library*, search for **Google Calendar API**, and click **Enable**.
+3. **Configure the OAuth consent screen:** go to *APIs & Services → OAuth consent screen*.
+   - User type: **External**
+   - Add the scopes `openid`, `.../auth/userinfo.email`, `.../auth/userinfo.profile` and `.../auth/calendar.events.readonly`.
+   - While the app is in **Testing** mode, add every Google account that will log in under **Test users**. Other accounts will be blocked.
+4. **Create credentials:** go to *APIs & Services → Credentials → Create credentials → OAuth client ID*.
+   - Application type: **Web application**
+   - Authorized JavaScript origins: `http://localhost:3000`
+   - Authorized redirect URIs: `http://localhost:3000/oauth/google`
+5. Copy the **Client ID** and **Client secret** into `backend/.env`:
+   ```env
+   GOOGLE_CLIENT_ID=xxxxxxxx.apps.googleusercontent.com
+   GOOGLE_CLIENT_SECRET=GOCSPX-xxxxxxxx
+   GOOGLE_REDIRECT_URI=http://localhost:3000/oauth/google
+   ```
+6. Restart the backend. Then click **Continue with Google** on the login page, or **Connect** under Profile → Google Calendar if you signed up with email.
+   - On the consent screen, **keep the "See events on Google Calendar" box ticked**.
+
+### Troubleshooting
+
+| Message | Fix |
+|---|---|
+| *Google sign-in is not configured on this server* | `GOOGLE_CLIENT_ID` or `GOOGLE_CLIENT_SECRET` is missing from `backend/.env`. Add both and restart the backend. |
+| `redirect_uri_mismatch` | The redirect URI in Google Cloud must match `GOOGLE_REDIRECT_URI` exactly (`http://localhost:3000/oauth/google`). |
+| *The Google Calendar API is not enabled for this project* | Enable **Google Calendar API** in the Library (step 2), wait about a minute, then retry. |
+| *FitFuel was not granted calendar access* | Sign out, then sign in with Google again and keep the calendar checkbox ticked. |
+| `access_denied` / "app not verified" | Add your Google account as a **Test user** on the consent screen. |
+
+## Useful scripts
+
+| Where | Command | What it does |
+|---|---|---|
+| root | `npm start` | Frontend dev server (port 3000) |
+| root | `npm run build` | Production build into `build/` |
+| root | `npm test` | Frontend tests |
+| backend | `npm run dev` | Backend with auto-restart |
+| backend | `npm start` | Backend |
+| backend | `node korpaScraper.js` | Scrape Korpa.mk into `korpa-data.json` |
+
+## Notes
+
+- The files `backend/.env`, `backend/fitfuel.db*`, `backend/uploads/` and `backend/korpa-data.json` are git-ignored. Each developer has their own local copies.
+- To reset your local data, stop the backend and delete `backend/fitfuel.db*`. A fresh database is created on the next start.
