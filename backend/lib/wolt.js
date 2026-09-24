@@ -56,7 +56,7 @@ async function discoverVenues(lat, lon) {
         for (const section of sections) {
             for (const item of section.items || []) {
                 const v = item.venue;
-                if (!v || !v.online || !v.delivers) continue;
+                if (!v || !v.online) continue;
                 const [vlon, vlat] = v.location || [];
                 venues.push({
                     id: v.id,

@@ -80,7 +80,9 @@ function loadContext(userId) {
     return { profile, dietary, targets, recentWorkout, nextWorkout, timing, eaten, bloodwork };
 }
 
-async function buildCandidateMeals({ latitude, longitude }, restrictions) {
+const DEFAULT_MAX_DISTANCE_KM = 10;
+
+async function buildCandidateMeals({ latitude, longitude }, restrictions, maxDistanceKm) {
     // Keep the candidate list modest — local models get slow and sloppy with
     // very long prompts.
     const isLocal = aiStatus().provider === 'ollama';
@@ -89,10 +91,30 @@ async function buildCandidateMeals({ latitude, longitude }, restrictions) {
         woltLimit: isLocal ? 5 : 8,
         menuLimit: isLocal ? 5 : 6,
     });
+
+    // Hard radius cutoff — drop restaurants further than maxDistanceKm so the
+    // AI can't pick something inconvenient just because it's a great macro fit.
+    // Restaurants with unknown distance (e.g. Korpa entries with no coordinates)
+    // are kept since we can't tell whether they violate the radius. If nothing
+    // is left within radius, fall back to the full list rather than showing
+    // "no restaurants" when options exist just outside an arbitrary line.
+    let candidateRestaurants = restaurants;
+    let radiusRelaxed = false;
+    if (Number.isFinite(maxDistanceKm)) {
+        const inRadius = restaurants.filter(
+            (r) => r.distanceKm == null || r.distanceKm <= maxDistanceKm
+        );
+        if (inRadius.length > 0) {
+            candidateRestaurants = inRadius;
+        } else if (restaurants.length > 0) {
+            radiusRelaxed = true;
+        }
+    }
+
     const perMenu = isLocal ? 12 : 18;
 
     const meals = [];
-    for (const r of restaurants) {
+    for (const r of candidateRestaurants) {
         if (!r.menu || r.menu.length === 0) continue;
         const distLabel =
             r.distanceKm != null
@@ -115,7 +137,7 @@ async function buildCandidateMeals({ latitude, longitude }, restrictions) {
             });
         }
     }
-    return { meals, noService, servedCities };
+    return { meals, noService, servedCities, radiusRelaxed };
 }
 
 router.post('/', async (req, res) => {
@@ -126,7 +148,11 @@ router.post('/', async (req, res) => {
         });
     }
 
-    const { latitude, longitude, locationLabel, tempRestrictions = [] } = req.body || {};
+    const { latitude, longitude, locationLabel, tempRestrictions = [], maxDistanceKm } = req.body || {};
+    const effectiveMaxDistanceKm =
+        Number.isFinite(Number(maxDistanceKm)) && Number(maxDistanceKm) > 0
+            ? Number(maxDistanceKm)
+            : DEFAULT_MAX_DISTANCE_KM;
     const ctx = loadContext(req.userId);
 
     if (!ctx.profile || !ctx.targets || !ctx.targets.calorieTarget) {
@@ -141,9 +167,10 @@ router.post('/', async (req, res) => {
         if (r && r.id) restrictionMap.set(r.id, r);
     }
     const restrictions = [...restrictionMap.values()];
-    const { meals, noService, servedCities } = await buildCandidateMeals(
+    const { meals, noService, servedCities, radiusRelaxed } = await buildCandidateMeals(
         { latitude, longitude },
-        restrictions
+        restrictions,
+        effectiveMaxDistanceKm
     );
     if (meals.length === 0) {
         return res.json({
@@ -226,7 +253,9 @@ ${JSON.stringify(meals, null, 2)}
 TASK:
 - Pick the 3 best menu items for THIS meal, ranked best-first.
 - Optimise for the athlete's goal, the meal timing, and the macros they still have left today.
-- Prefer closer restaurants when the nutritional fit is similar.
+- The list is already restricted to restaurants within ${effectiveMaxDistanceKm} km (items with no
+  "distance" value have unknown coordinates but are still within the delivery area) — you don't need
+  to exclude anything further for distance, just prefer closer options when the nutritional fit is similar.
 - Pick from at least 2 different restaurants unless one clearly dominates.
 - Copy the "meal" and "restaurant" strings EXACTLY as they appear in the list above.
 - Items are already filtered for hard allergen/dietary blocks. Items tagged allergenFlag "deprioritized"
@@ -288,7 +317,13 @@ Reply with ONLY valid JSON, no prose, in exactly this shape:
             success: true,
             dailySummary: parsed.dailySummary || '',
             recommendations,
-            meta: { ...aiStatus(), candidates: meals.length, timing: ctx.timing },
+            meta: {
+                ...aiStatus(),
+                candidates: meals.length,
+                timing: ctx.timing,
+                maxDistanceKm: effectiveMaxDistanceKm,
+                radiusRelaxed,
+            },
             // Echoes exactly what was sent to the AI, so the UI can show the user
             // their inputs really were used — not just trust that they were.
             personalization: {
