@@ -76,13 +76,19 @@ function loadContext(userId) {
              FROM meal_log WHERE user_id = ? AND date = ?`
         )
         .get(userId, todayISO());
+    const eatenMeals = db
+        .prepare('SELECT name, restaurant FROM meal_log WHERE user_id = ? AND date = ?')
+        .all(userId, todayISO());
 
-    return { profile, dietary, targets, recentWorkout, nextWorkout, timing, eaten, bloodwork };
+    return { profile, dietary, targets, recentWorkout, nextWorkout, timing, eaten, eatenMeals, bloodwork };
 }
+
+const norm = (s) => String(s || '').toLowerCase().replace(/\s+/g, ' ').trim();
+const mealKey = (name, restaurant) => `${norm(name)}|${norm(restaurant)}`;
 
 const DEFAULT_MAX_DISTANCE_KM = 10;
 
-async function buildCandidateMeals({ latitude, longitude }, restrictions, maxDistanceKm) {
+async function buildCandidateMeals({ latitude, longitude }, restrictions, maxDistanceKm, eatenKeys) {
     // Keep the candidate list modest — local models get slow and sloppy with
     // very long prompts.
     const isLocal = aiStatus().provider === 'ollama';
@@ -123,6 +129,8 @@ async function buildCandidateMeals({ latitude, longitude }, restrictions, maxDis
                     : `${r.distanceKm.toFixed(1)} km away`
                 : null;
         for (const item of r.menu.slice(0, perMenu)) {
+            // Don't suggest something the user already ate today.
+            if (eatenKeys.has(mealKey(item.name, r.name))) continue;
             const flag = classifyItem(item, restrictions);
             if (flag === 'blocked') continue;
             meals.push({
@@ -170,7 +178,8 @@ router.post('/', async (req, res) => {
     const { meals, noService, servedCities, radiusRelaxed } = await buildCandidateMeals(
         { latitude, longitude },
         restrictions,
-        effectiveMaxDistanceKm
+        effectiveMaxDistanceKm,
+        new Set(ctx.eatenMeals.map((m) => mealKey(m.name, m.restaurant)))
     );
     if (meals.length === 0) {
         return res.json({
@@ -220,6 +229,9 @@ router.post('/', async (req, res) => {
             carb_g: Math.round(ctx.eaten.cb),
             fat_g: Math.round(ctx.eaten.f),
         },
+        meals_eaten_today: ctx.eatenMeals.map((m) =>
+            m.restaurant ? `${m.name} (${m.restaurant})` : m.name
+        ),
         remaining_today: remaining,
         meal_timing: TIMING_LABELS[ctx.timing] || ctx.timing,
         recent_workout: ctx.recentWorkout
@@ -257,6 +269,8 @@ TASK:
   "distance" value have unknown coordinates but are still within the delivery area) — you don't need
   to exclude anything further for distance, just prefer closer options when the nutritional fit is similar.
 - Pick from at least 2 different restaurants unless one clearly dominates.
+- Add variety: avoid dishes very similar to anything in meals_eaten_today (same kind of dish or main
+  ingredient), and prefer restaurants they haven't already ordered from today when the fit is similar.
 - Copy the "meal" and "restaurant" strings EXACTLY as they appear in the list above.
 - Items are already filtered for hard allergen/dietary blocks. Items tagged allergenFlag "deprioritized"
   clash with a moderate restriction — avoid them unless clearly the best option available. Items tagged
@@ -287,7 +301,6 @@ Reply with ONLY valid JSON, no prose, in exactly this shape:
             prompt,
         });
 
-        const norm = (s) => String(s || '').toLowerCase().replace(/\s+/g, ' ').trim();
         const recommendations = (parsed.recommendations || [])
             .map((rec) => {
                 const m = norm(rec.meal);
